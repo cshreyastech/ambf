@@ -1,9 +1,26 @@
 enclosure size: {length: 10.0, width: 10.0, height: 3.0}
-lights: [light1, light2]
+lights: [light1]
 cameras: [camera1]
 environment: "./checkered_floor.yaml"
 namespace: /ambf/env/
 max iterations: 50
+gravity: {x: 0.0, y: 0.0, z: -9.81}
+# shaders:
+#   path: ../../ambf_shaders/normal_map
+#   vertex: "shader.vs"
+#   fragment: "shader.fs"
+# skybox: # Uncomment to load this skybox
+#   path: ./skybox/ocean_and_mountains
+#   right: px.png
+#   left:  nx.png
+#   top: py.png
+#   bottom: ny.png
+#   front: pz.png
+#   back: nz.png
+#   shaders:
+#     path: ./skybox/
+#     vertex: "shader.vs"
+#     fragment: "shader.fs"
 
 light1:
   namespace: /ambf/env/lights/
@@ -11,7 +28,7 @@ light1:
   location: {x: 0.0, y: 0.5, z: 2.5}
   direction: {x: 0, y: 0, z: -1.0}
   spot exponent: 0.3
-  shadow quality: 0
+  shadow quality: 5
   cutoff angle: 0.7
 
 light2:
@@ -20,7 +37,7 @@ light2:
   location: {x: 0.5, y: -1, z: 2.5}
   direction: {x: 0, y: 0, z: -1.0}
   spot exponent: 0.3
-  shadow quality: 5
+  shadow quality: 0
   cutoff angle: 0.7
 
 light3:

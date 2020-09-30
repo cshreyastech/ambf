@@ -1,8 +1,8 @@
 //==============================================================================
 /*
     Software License Agreement (BSD License)
-    Copyright (c) 2019, AMBF
-    (www.aimlab.wpi.edu)
+    Copyright (c) 2020, AMBF
+    (https://github.com/WPI-AIM/ambf)
 
     All rights reserved.
 
@@ -35,10 +35,9 @@
     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
 
-    \author    <http://www.aimlab.wpi.edu>
     \author    <amunawar@wpi.edu>
     \author    Adnan Munawar
-    \version   $
+    \version   1.0$
 */
 //==============================================================================
 
@@ -61,6 +60,9 @@ public:
         m_name = a_name;
         m_namespace = a_namespace;
 
+        m_freq_min = a_freq_min;
+        m_freq_max = a_freq_max;
+
         int argc = 0;
         char **argv = 0;
         ros::init(argc, argv, "ambf_comm_node");
@@ -72,6 +74,10 @@ public:
     virtual void init() = 0;
     virtual void run_publishers();
     virtual void cleanUp();
+    virtual T_cmd get_command(){return m_Cmd;}
+
+    int m_freq_min;
+    int m_freq_max;
 
 protected:
     boost::shared_ptr<ros::NodeHandle> nodePtr;

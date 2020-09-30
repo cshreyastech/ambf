@@ -1,8 +1,8 @@
 //==============================================================================
 /*
     Software License Agreement (BSD License)
-    Copyright (c) 2019, AMBF
-    (www.aimlab.wpi.edu)
+    Copyright (c) 2020, AMBF
+    (https://github.com/WPI-AIM/ambf)
 
     All rights reserved.
 
@@ -35,10 +35,9 @@
     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
 
-    \author    <http://www.aimlab.wpi.edu>
     \author    <amunawar@wpi.edu>
     \author    Adnan Munawar
-    \version   $
+    \version   1.0$
 */
 //==============================================================================
 
@@ -46,7 +45,6 @@
 namespace ambf_comm{
 
 Object::Object(std::string a_name, std::string a_namespace, int a_freq_min, int a_freq_max, double time_out): ObjectRosCom(a_name, a_namespace, a_freq_min, a_freq_max, time_out){
-  m_objectCommand.enable_position_controller = false;
 }
 
 void Object::cur_position(double px, double py, double pz){
@@ -79,8 +77,22 @@ void Object::cur_torque(double nx, double ny, double nz){
     tf::vector3TFToMsg(n, m_State.wrench.torque);
 }
 
-void Object::update_af_cmd(){
-    m_objectCommand.update(&m_Cmd);
+ambf_msgs::ObjectCmd Object::get_command(){
+    ambf_msgs::ObjectCmd temp_cmd = m_Cmd;
+    int joint_commands_size = m_Cmd.joint_cmds.size();
+    temp_cmd.joint_cmds.resize(joint_commands_size);
+    temp_cmd.position_controller_mask.resize(joint_commands_size);
+    temp_cmd.enable_position_controller = m_Cmd.enable_position_controller;
+    for(size_t idx = 0; idx < joint_commands_size ; idx++){
+        temp_cmd.joint_cmds[idx] = m_Cmd.joint_cmds[idx];
+        if (idx < m_Cmd.position_controller_mask.size()){
+            temp_cmd.position_controller_mask[idx] = m_Cmd.position_controller_mask[idx];
+        }
+        else{
+            temp_cmd.position_controller_mask[idx] = 0;
+        }
+    }
+    return temp_cmd;
 }
 
 void Object::set_wall_time(double a_sec){
@@ -129,4 +141,5 @@ void destroy_object(Object* obj){
 }
 
 }
+
 }

@@ -1,8 +1,8 @@
-//===========================================================================
+//==============================================================================
 /*
     Software License Agreement (BSD License)
-    Copyright (c) 2019, AMBF
-    (www.aimlab.wpi.edu)
+    Copyright (c) 2020, AMBF
+    (https://github.com/WPI-AIM/ambf)
 
     All rights reserved.
 
@@ -35,13 +35,12 @@
     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
 
-    \author:    <http://www.aimlab.wpi.edu>
-    \author:    <amunawar@wpi.edu>
-    \author:    Adnan Munawar
+    \author    <amunawar@wpi.edu>
+    \author    Adnan Munawar
     \courtesy:  Starting point CHAI3D-BULLET examples by Francois Conti from <www.chai3d.org>
-    \version:   $
+    \version   1.0$
 */
-//===========================================================================
+//==============================================================================
 
 //---------------------------------------------------------------------------
 #include "chai3d.h"
@@ -82,9 +81,6 @@ bool mirroredDisplay = false;
 //---------------------------------------------------------------------------
 // BULLET MODULE VARIABLES
 //---------------------------------------------------------------------------
-
-// bullet world
-cBulletWorld* g_chaiBulletWorld;
 
 afWorld *g_afWorld;
 
@@ -141,6 +137,10 @@ bool g_window_closed = false;
 
 // Flag to toggle between inverted/non_inverted mouse pitch with mouse
 bool g_mouse_inverted_y = false;
+
+// Ratio between Window Height and Width to Frame Buffer Height and Width
+double g_winWidthRatio = 1.0;
+double g_winHeightRatio = 1.0;
 
 // a frequency counter to measure the simulation graphic rate
 cFrequencyCounter g_freqCounterGraphics;
@@ -389,26 +389,24 @@ int main(int argc, char* argv[])
     //-----------------------------------------------------------------------
 
     // create a dynamic world.
-    g_chaiBulletWorld = new cBulletWorld();
+    g_afWorld = new afWorld(g_cmdOpts.prepend_namespace);
 
     // set the background color of the environment
-    g_chaiBulletWorld->m_backgroundColor.setWhite();
+    g_afWorld->m_backgroundColor.setWhite();
 
     //////////////////////////////////////////////////////////////////////////
     // BULLET WORLD
     //////////////////////////////////////////////////////////////////////////
-    // set some gravity
-    g_chaiBulletWorld->setGravity(cVector3d(0.0, 0.0, -9.8));
 
 
     //////////////////////////////////////////////////////////////////////////
     // AF MULTIBODY HANDLER
     //////////////////////////////////////////////////////////////////////////
-    g_afWorld = new afWorld(g_chaiBulletWorld, g_cmdOpts.prepend_namespace);
     if (g_afWorld->loadBaseConfig(g_cmdOpts.launchFilePath)){
         // The world loads the lights and cameras + windows
         std::string world_filename = g_afWorld->getWorldConfig();
         g_afWorld->loadWorld(world_filename, g_cmdOpts.showGUI);
+
         g_cameras = g_afWorld->getAFCameras();
 
         // Process the loadMultiBodyFiles string
@@ -443,9 +441,9 @@ int main(int argc, char* argv[])
             for (int idx = 0 ; idx < mbIndexes.size() ; idx++){
                 g_afWorld->loadADF(mbIndexes[idx], true);
             }
-        }       
+        }
 
-        g_chaiBulletWorld->m_bulletWorld->setInternalTickCallback(preTickCallBack, 0, true);
+        g_afWorld->m_bulletWorld->setInternalTickCallback(preTickCallBack, 0, true);
     }
     else{
         // Safely exit the program
@@ -513,6 +511,11 @@ int main(int argc, char* argv[])
 #endif
     }
 
+    afLightVec temp_lights = g_afWorld->getAFLighs();
+    for(int i = 0 ; i < temp_lights.size() ; i++){
+        temp_lights[i]->resolveParenting();
+    }
+
     //-----------------------------------------------------------------------------------------------------------
     // END: INTIALIZE SEPERATE WINDOWS FOR EACH WINDOW-CAMRERA PAIR
     //-----------------------------------------------------------------------------------------------------------
@@ -578,6 +581,34 @@ int main(int argc, char* argv[])
 
 //    signal (SIGINT, exitHandler);
 
+    // Enable any shader programs defined via ADF
+    g_afWorld->enableShaderProgram();
+
+    afRigidBodyVec rbVec = g_afWorld->getAFRigidBodies();
+
+    // Override the shader program if defined for bodies if defined
+    for (int i = 0 ; i < rbVec.size() ; i++){
+        rbVec[i]->enableShaderProgram();
+    }
+
+    RateSleep graphicsSleep(120);
+
+    // Compute the window width and height ratio
+    if (g_cmdOpts.showGUI){
+        int winH, winW;
+        glfwGetWindowSize(g_cameras[0]->m_window, &winW, &winH);
+
+        int buffH, buffW;
+        glfwGetFramebufferSize(g_cameras[0]->m_window, &buffW, &buffH);
+
+        g_winWidthRatio = double(buffW) / double(winW);
+        g_winHeightRatio = double(buffH) / double(winH);
+
+        // Load the skybox if defined.
+        g_afWorld->loadSkyBox();
+
+    }
+
     // main graphic loop
     while (!g_window_closed)
     {
@@ -596,6 +627,8 @@ int main(int argc, char* argv[])
             std::cerr << "\nRunning Headless (-g option provided) t = " << g_afWorld->g_wallClock.getCurrentTimeSeconds() << " sec" << std::endl;
             sleep(1.0);
         }
+
+        graphicsSleep.sleep();
     }
 
     // close window
@@ -679,6 +712,7 @@ void errorCallback(int a_error, const char* a_description)
 
 bool g_updateLabels = true;
 bool g_enableGrippingAssist = true;
+bool g_enableNormalMapping = true;
 
 ///
 /// \brief keyCallback
@@ -734,7 +768,7 @@ void keyCallback(GLFWwindow* a_window, int a_key, int a_scancode, int a_action, 
         // option - If CTRL X is pressed, reset the simulation
         else if (a_key == GLFW_KEY_X){
             g_afWorld->pausePhysics(true);
-            if (g_afWorld->m_lastPickedBody){
+            if (g_afWorld->m_lastPickedBody != nullptr){
                 printf("Removing Last Picked Body Named: \"%s\"\n", g_afWorld->m_lastPickedBody->m_name.c_str());
                 g_afWorld->m_lastPickedBody->remove();
             }
@@ -744,6 +778,49 @@ void keyCallback(GLFWwindow* a_window, int a_key, int a_scancode, int a_action, 
             g_afWorld->pausePhysics(false);
         }
 
+        // option - Pause Physics
+        else if (a_key == GLFW_KEY_P)
+        {
+            bool pause_phx = g_afWorld->isPhysicsPaused();
+            // Toggle;
+            pause_phx = !pause_phx;
+            g_afWorld->pausePhysics(pause_phx);
+            printf("Pausing Physics: %i\n", pause_phx);
+        }
+
+        // option - Step Physics
+        else if (a_key == GLFW_KEY_SPACE)
+        {
+            if(g_afWorld->isPhysicsPaused()){
+                g_afWorld->stepPhysicsManually(10);
+                printf("Stepping Physics by 10 Step \n");
+            }
+        }
+
+    }
+    else if (a_mods == GLFW_MOD_SHIFT){
+        if (a_key == GLFW_KEY_N){
+            afRigidBodyVec rbVec = g_afWorld->getAFRigidBodies();
+            g_enableNormalMapping = ! g_enableNormalMapping;
+            printf("Toggling Normal Mapping ON/OFF %d \n", g_enableNormalMapping);
+            for (int i = 0 ; i < rbVec.size() ; i++){
+                if (rbVec[i]->m_shaderProgramDefined){
+                    if (rbVec[i]->getShaderProgram()){
+                        rbVec[i]->getShaderProgram()->setUniformi("vEnableNormalMapping", g_enableNormalMapping);
+                    }
+                }
+            }
+        }
+
+        // option - Toogle visibility of body frames and softbody skeleton
+        else if (a_key == GLFW_KEY_V){
+            printf("Toggling Frame Visibility ON/OFF\n");
+            if (g_afWorld->m_lastPickedBody != nullptr){
+                g_afWorld->m_lastPickedBody->toggleFrameVisibility();
+            }
+            else{
+            }
+        }
     }
     else{
 
@@ -876,6 +953,18 @@ void keyCallback(GLFWwindow* a_window, int a_key, int a_scancode, int a_action, 
                 rbIt->second->toggleFrameVisibility();
             }
 
+            auto lMap = g_afWorld->getAFLightMap();
+            afLightMap::const_iterator lIt;
+            for (lIt = lMap->begin() ; lIt != lMap->end(); ++lIt){
+                lIt->second->toggleFrameVisibility();
+            }
+
+            auto cMap = g_afWorld->getAFCameraMap();
+            afCameraMap::const_iterator cIt;
+            for (cIt = cMap->begin() ; cIt != cMap->end(); ++cIt){
+                cIt->second->toggleFrameVisibility();
+            }
+
             auto sbMap = g_afWorld->getAFSoftBodyMap();
             afSoftBodyMap::const_iterator sbIt;
             for (sbIt = sbMap->begin() ; sbIt != sbMap->end(); ++sbIt){
@@ -892,7 +981,7 @@ void keyCallback(GLFWwindow* a_window, int a_key, int a_scancode, int a_action, 
         else if (a_key == GLFW_KEY_1)
         {
             // enable gravity
-            g_chaiBulletWorld->setGravity(cVector3d(0.0, 0.0, -9.8));
+            g_afWorld->setGravity(cVector3d(0.0, 0.0, -9.8));
             printf("gravity ON:\n");
         }
 
@@ -900,7 +989,7 @@ void keyCallback(GLFWwindow* a_window, int a_key, int a_scancode, int a_action, 
         else if (a_key == GLFW_KEY_2)
         {
             // disable gravity
-            g_chaiBulletWorld->setGravity(cVector3d(0.0, 0.0, 0.0));
+            g_afWorld->setGravity(cVector3d(0.0, 0.0, 0.0));
             printf("gravity OFF:\n");
         }
 
@@ -975,6 +1064,15 @@ void keyCallback(GLFWwindow* a_window, int a_key, int a_scancode, int a_action, 
         {
             printf("angular damping:  %f\n", g_inputDevices->increment_D_ac(0.1));
         }
+
+        // option - step physics
+        else if (a_key == GLFW_KEY_SPACE)
+        {
+            if(g_afWorld->isPhysicsPaused()){
+                g_afWorld->stepPhysicsManually(1);
+                printf("Stepping Physics by 1 Step \n");
+            }
+        }
     }
 }
 
@@ -994,13 +1092,13 @@ void mouseBtnsCallback(GLFWwindow* a_window, int a_button, int a_action, int a_m
 //                (*g_cameraIt)->showTargetPos(true);
                 if (a_action){
                     if (g_mousePickingEnabled){
-                        g_pickBody = true;
-                        cVector3d rayFrom = (*g_cameraIt)->getLocalPos();
+                        cVector3d rayFrom = (*g_cameraIt)->getGlobalPos();
                         double x_pos, y_pos;
                         glfwGetCursorPos(a_window, &x_pos, &y_pos);
                         cVector3d rayTo = getRayTo(x_pos, y_pos, *g_cameraIt);
                         g_pickFrom = rayFrom;
                         g_pickTo = rayTo;
+                        g_pickBody = true;
                     }
                 }
                 else{
@@ -1033,7 +1131,7 @@ void mousePosCallback(GLFWwindow* a_window, double a_xpos, double a_ypos){
             {
                 speed_scale = 0.1;
             }
-            afCamera* devCam = (*g_cameraIt);
+            afCameraPtr devCam = (*g_cameraIt);
             (*g_cameraIt)->mouse_x[1] = (*g_cameraIt)->mouse_x[0];
             (*g_cameraIt)->mouse_x[0] = a_xpos;
             (*g_cameraIt)->mouse_y[1] = (*g_cameraIt)->mouse_y[0];
@@ -1041,7 +1139,7 @@ void mousePosCallback(GLFWwindow* a_window, double a_xpos, double a_ypos){
 
             if( devCam->mouse_l_clicked ){
                 if(g_mousePickingEnabled){
-                    cVector3d rayFrom = (*g_cameraIt)->getLocalPos();
+                    cVector3d rayFrom = (*g_cameraIt)->getGlobalPos();
                     cVector3d rayTo = getRayTo(a_xpos, a_ypos, (*g_cameraIt));
                     g_pickFrom = rayFrom;
                     g_pickTo = rayTo;
@@ -1148,7 +1246,12 @@ void mouseScrollCallback(GLFWwindow *a_window, double a_xpos, double a_ypos){
             if(dPos.length() < 0.5){
                 _targetPos = _targetPos + cameraPtr->getLocalRot() * camVelAlongLook;
             }
-            cameraPtr->setLocalPos( cameraPtr->getLocalPos() + cameraPtr->getLocalRot() * camVelAlongLook );
+            if (cameraPtr->isOrthographic()){
+                cameraPtr->getInternalCamera()->setOrthographicView(cameraPtr->getInternalCamera()->getOrthographicViewWidth() + (speed_scale * scale * (*g_cameraIt)->mouse_scroll[0]));
+            }
+            else{
+                cameraPtr->setLocalPos( cameraPtr->getLocalPos() + cameraPtr->getLocalRot() * camVelAlongLook );
+            }
             cameraPtr->setTargetPos(_targetPos);
         }
     }
@@ -1173,8 +1276,12 @@ cVector3d getRayTo(int x, int y, afCameraPtr a_cameraPtr)
 
     btVector3 camPos, camTarget;
 
-    camPos = toBTvec(a_cameraPtr->getLocalPos() );
-    camTarget = toBTvec(a_cameraPtr->getTargetPos() );
+    camPos = toBTvec(a_cameraPtr->getGlobalPos());
+    cVector3d targetPosGlobal = a_cameraPtr->getTargetPos();
+    if (a_cameraPtr->getParent()){
+        targetPosGlobal = a_cameraPtr->getParent()->getLocalTransform() * targetPosGlobal;
+    }
+    camTarget = toBTvec(targetPosGlobal);
 
     btVector3 rayFrom = camPos;
     btVector3 rayForward = (camTarget - camPos);
@@ -1211,8 +1318,8 @@ cVector3d getRayTo(int x, int y, afCameraPtr a_cameraPtr)
     btVector3 dVert = vertical * 1.f / height;
 
     btVector3 rayTo = rayToCenter - 0.5f * hor + 0.5f * vertical;
-    rayTo += btScalar(x) * dHor;
-    rayTo -= btScalar(y) * dVert;
+    rayTo += btScalar(g_winWidthRatio*x) * dHor;
+    rayTo -= btScalar(g_winHeightRatio*y) * dVert;
     cVector3d cRay = toCvec(rayTo);
     return cRay;
 }
@@ -1271,7 +1378,6 @@ void close(void)
     for(int i = 0 ; i < g_inputDevices->m_numDevices ; i ++){
         delete g_hapticsThreads[i];
     }
-    delete g_chaiBulletWorld;
     delete g_afWorld;
 }
 
@@ -1282,7 +1388,7 @@ void close(void)
 void updateGraphics()
 {
     // Update shadow maps once
-    g_chaiBulletWorld->updateShadowMaps(false, mirroredDisplay);
+    g_afWorld->updateShadowMaps(false, mirroredDisplay);
 
     for (g_cameraIt = g_cameras.begin(); g_cameraIt != g_cameras.end(); ++ g_cameraIt){
         afCameraPtr cameraPtr = (*g_cameraIt);
@@ -1290,11 +1396,26 @@ void updateGraphics()
         glfwMakeContextCurrent(cameraPtr->m_window);
 
         // get width and height of window
-        glfwGetWindowSize(cameraPtr->m_window, &cameraPtr->m_width, &cameraPtr->m_height);
+//        glfwGetFraSize(cameraPtr->m_window, &cameraPtr->m_width, &cameraPtr->m_height);
+        glfwGetFramebufferSize(cameraPtr->m_window, &cameraPtr->m_width, &cameraPtr->m_height);
 
         // Update the Labels in a separate sub-routine
         if (g_updateLabels)
             updateLabels();
+
+        if (g_afWorld->m_skyBox_shaderProgramDefined && g_afWorld->m_skyBoxMesh->getShaderProgram() != nullptr){
+            cGenericObject* go;
+            cRenderOptions ro;
+            g_afWorld->m_skyBoxMesh->getShaderProgram()->use(go, ro);
+
+            cMatrix3d rotOffsetPre(0, 0, 90, C_EULER_ORDER_ZYX, false, true);
+            cMatrix3d rotOffsetPost(90, 90, 0, C_EULER_ORDER_ZYX, false, true);
+            cTransform viewMat = rotOffsetPre * cameraPtr->getLocalTransform() * rotOffsetPost;
+
+            g_afWorld->m_skyBoxMesh->getShaderProgram()->setUniform("viewMat", viewMat, 1);
+
+            g_afWorld->m_skyBoxMesh->getShaderProgram()->disable();
+        }
 
         // render world
         cameraPtr->renderView(cameraPtr->m_width, cameraPtr->m_height);
@@ -1349,7 +1470,7 @@ void updateLabels(){
 
         // update haptic and graphic rate data
         std::string wallTimeStr = "Wall Time: " + cStr(g_afWorld->g_wallClock.getCurrentTimeSeconds(), 2) + " s";
-        std::string simTimeStr = "Sim Time: " + cStr(g_chaiBulletWorld->getSimulationTime(), 2) + " s";
+        std::string simTimeStr = "Sim Time: " + cStr(g_afWorld->getSimulationTime(), 2) + " s";
 
         std::string graphicsFreqStr = "Gfx (" + cStr(g_freqCounterGraphics.getFrequency(), 0) + " Hz)";
         std::string hapticFreqStr = "Phx (" + cStr(g_freqCounterHaptics.getFrequency(), 0) + " Hz)";
@@ -1393,7 +1514,7 @@ void updatePhysics(){
     // start haptic device
     g_afWorld->g_wallClock.start(true);
 
-    RateSleep rateSleep(g_cmdOpts.phxFrequency);
+    RateSleep phxSleep(g_cmdOpts.phxFrequency);
     bool bodyPicked = false;
 
     double dt_fixed = 1.0 / g_cmdOpts.phxFrequency;
@@ -1403,7 +1524,6 @@ void updatePhysics(){
     torque_prev.set(0, 0, 0);
     while(g_simulationRunning)
     {
-        if (!g_afWorld->isPhysicsPaused()){
             g_freqCounterHaptics.signal(1);
 
             // Take care of any picked body by mouse
@@ -1441,45 +1561,61 @@ void updatePhysics(){
                         afSensorPtr sensorPtr = rootLink->getAFSensors()[sIdx];
                         if (sensorPtr->m_sensorType == afSensorType::proximity){
                             afProximitySensor* proximitySensorPtr = (afProximitySensor*) sensorPtr;
-                            if (proximitySensorPtr->isTriggered() && simDev->m_gripper_angle < 0.5){
-                                if (proximitySensorPtr->m_sensedBodyType == afProximitySensor::RIGID_BODY){
-                                    if (!simDev->m_rigidGrippingConstraints[sIdx]){
-                                        btRigidBody* bodyAPtr = proximitySensorPtr->getParentBody()->m_bulletRigidBody;
-                                        btRigidBody* bodyBPtr = proximitySensorPtr->getSensedRigidBody();
-                                        if (!rootLink->isChild(bodyBPtr)){
-                                            cVector3d hitPointInWorld = proximitySensorPtr->getSensedPoint();
-                                            btVector3 pvtA = bodyAPtr->getCenterOfMassTransform().inverse() * toBTvec(hitPointInWorld);
-                                            btVector3 pvtB = bodyBPtr->getCenterOfMassTransform().inverse() * toBTvec(hitPointInWorld);
-                                            simDev->m_rigidGrippingConstraints[sIdx] = new btPoint2PointConstraint(*bodyAPtr, *bodyBPtr, pvtA, pvtB);
-                                            simDev->m_rigidGrippingConstraints[sIdx]->m_setting.m_impulseClamp = 3.0;
-                                            simDev->m_rigidGrippingConstraints[sIdx]->m_setting.m_tau = 0.001f;
-                                            g_chaiBulletWorld->m_bulletWorld->addConstraint(simDev->m_rigidGrippingConstraints[sIdx]);
+                            for (int i = 0 ; i < proximitySensorPtr->getCount() ; i++){
+                                if (proximitySensorPtr->isTriggered(i) && simDev->m_gripper_angle < 0.5){
+                                    if (proximitySensorPtr->getSensedBodyType(i) == afBodyType::RIGID_BODY){
+                                        if (!simDev->m_rigidGrippingConstraints[sIdx]){
+                                            btRigidBody* bodyAPtr = proximitySensorPtr->getParentBody()->m_bulletRigidBody;
+                                            btRigidBody* bodyBPtr = proximitySensorPtr->getSensedBTRigidBody(i);
+                                            if (!rootLink->isChild(bodyBPtr)){
+                                                cVector3d hitPointInWorld = proximitySensorPtr->getSensedPoint(i);
+                                                btVector3 pvtA = bodyAPtr->getCenterOfMassTransform().inverse() * toBTvec(hitPointInWorld);
+                                                btVector3 pvtB = bodyBPtr->getCenterOfMassTransform().inverse() * toBTvec(hitPointInWorld);
+                                                simDev->m_rigidGrippingConstraints[sIdx] = new btPoint2PointConstraint(*bodyAPtr, *bodyBPtr, pvtA, pvtB);
+                                                simDev->m_rigidGrippingConstraints[sIdx]->m_setting.m_impulseClamp = 3.0;
+                                                simDev->m_rigidGrippingConstraints[sIdx]->m_setting.m_tau = 0.001f;
+                                                g_afWorld->m_bulletWorld->addConstraint(simDev->m_rigidGrippingConstraints[sIdx]);
+                                            }
                                         }
                                     }
-                                }
 
-                                if (proximitySensorPtr->m_sensedBodyType == afProximitySensor::SOFT_BODY){
-                                    if (!simDev->m_softGrippingConstraints[sIdx]){
-                                        // Here we implemented the softBody grad logic. We want to move the
-                                        // soft body as we move the simulated end effector
+                                    if (proximitySensorPtr->getSensedBodyType(i) == afBodyType::SOFT_BODY){
+                                        if (!simDev->m_softGrippingConstraints[sIdx]){
+                                            // Here we implemented the softBody grad logic. We want to move the
+                                            // soft body as we move the simulated end effector
 
-                                        // Get the parent body that owns this sensor
-                                        btRigidBody* _rBody = proximitySensorPtr->getParentBody()->m_bulletRigidBody;
-                                        // Get the sensed softbody
-                                        btSoftBody* _sBody = proximitySensorPtr->getSensedSoftBody();
+                                            // Get the parent body that owns this sensor
+                                            btRigidBody* _rBody = proximitySensorPtr->getParentBody()->m_bulletRigidBody;
+                                            // Get the sensed softbody
+                                            btSoftBody* _sBody = proximitySensorPtr->getSensedBTSoftBody(i);
 
-                                        simDev->m_softGrippingConstraints[sIdx] = new SoftBodyGrippingConstraint();
-                                        simDev->m_softGrippingConstraints[sIdx]->m_sBody = _sBody;
-                                        simDev->m_softGrippingConstraints[sIdx]->m_rBody = _rBody;
+                                            simDev->m_softGrippingConstraints[sIdx] = new SoftBodyGrippingConstraint();
+                                            simDev->m_softGrippingConstraints[sIdx]->m_sBody = _sBody;
+                                            simDev->m_softGrippingConstraints[sIdx]->m_rBody = _rBody;
 
-                                        // If we get a sensedSoftBody, we should check if it has a detected face. If a face
-                                        // is found, we can anchor all the connecting nodes.
-                                        if (proximitySensorPtr->getSensedSoftBodyFace()){
-                                            btSoftBody::Face* _sensedFace = proximitySensorPtr->getSensedSoftBodyFace();
-                                            for (int nIdx = 0; nIdx < 3 ; nIdx++){
-                                                btSoftBody::Node* _node = _sensedFace->m_n[nIdx];
+                                            // If we get a sensedSoftBody, we should check if it has a detected face. If a face
+                                            // is found, we can anchor all the connecting nodes.
+                                            if (proximitySensorPtr->getSensedSoftBodyFace(i)){
+                                                btSoftBody::Face* _sensedFace = proximitySensorPtr->getSensedSoftBodyFace(i);
+                                                for (int nIdx = 0; nIdx < 3 ; nIdx++){
+                                                    btSoftBody::Node* _node = _sensedFace->m_n[nIdx];
+                                                    btVector3 _localPivot = _rBody->getCenterOfMassTransform().inverse() * _node->m_x;
+
+                                                    btSoftBody::Anchor _anchor;
+                                                    _node->m_battach = 1;
+                                                    _anchor.m_body = _rBody;
+                                                    _anchor.m_node = _node;
+                                                    _anchor.m_influence = 1;
+                                                    _anchor.m_local = _localPivot;
+                                                    _sBody->m_anchors.push_back(_anchor);
+                                                    simDev->m_softGrippingConstraints[sIdx]->m_nodePtrs.push_back(_node);
+                                                }
+                                            }
+                                            // Otherwise we shall directly anchor to nodes. This case
+                                            // arises for ropes, suturing thread etc
+                                            else{
+                                                btSoftBody::Node* _node = proximitySensorPtr->getSensedSoftBodyNode(i);
                                                 btVector3 _localPivot = _rBody->getCenterOfMassTransform().inverse() * _node->m_x;
-
                                                 btSoftBody::Anchor _anchor;
                                                 _node->m_battach = 1;
                                                 _anchor.m_body = _rBody;
@@ -1488,71 +1624,59 @@ void updatePhysics(){
                                                 _anchor.m_local = _localPivot;
                                                 _sBody->m_anchors.push_back(_anchor);
                                                 simDev->m_softGrippingConstraints[sIdx]->m_nodePtrs.push_back(_node);
-                                            }
-                                        }
-                                        // Otherwise we shall directly anchor to nodes. This case
-                                        // arises for ropes, suturing thread etc
-                                        else{
-                                            btSoftBody::Node* _node = proximitySensorPtr->getSensedSoftBodyNode();
-                                            btVector3 _localPivot = _rBody->getCenterOfMassTransform().inverse() * _node->m_x;
-                                            btSoftBody::Anchor _anchor;
-                                            _node->m_battach = 1;
-                                            _anchor.m_body = _rBody;
-                                            _anchor.m_node = _node;
-                                            _anchor.m_influence = 1;
-                                            _anchor.m_local = _localPivot;
-                                            _sBody->m_anchors.push_back(_anchor);
-                                            simDev->m_softGrippingConstraints[sIdx]->m_nodePtrs.push_back(_node);
 
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            else{
-                                if(simDev->m_rigidGrippingConstraints[sIdx]){
-                                    g_chaiBulletWorld->m_bulletWorld->removeConstraint(simDev->m_rigidGrippingConstraints[sIdx]);
-                                    simDev->m_rigidGrippingConstraints[sIdx] = 0;
-                                }
-                                if(simDev->m_softGrippingConstraints[sIdx]){
-                                    for (int nIdx = 0 ; nIdx < simDev->m_softGrippingConstraints[sIdx]->m_nodePtrs.size()  ; nIdx++){
-                                        btSoftBody::Node* _nodePtr = simDev->m_softGrippingConstraints[sIdx]->m_nodePtrs[nIdx];
-                                        btSoftBody* _sBody = simDev->m_softGrippingConstraints[sIdx]->m_sBody;
-                                        btRigidBody* _rBody = simDev->m_softGrippingConstraints[sIdx]->m_rBody;
-                                        for (int aIdx = 0 ; aIdx < _sBody->m_anchors.size() ; aIdx++){
-                                            if (_sBody->m_anchors[aIdx].m_body == _rBody){
-                                                btSoftBody::Anchor* _anchor = &_sBody->m_anchors[aIdx];
-                                                if (_anchor->m_node == _nodePtr){
-                                                    _sBody->m_anchors.removeAtIndex(aIdx);
-                                                    break;
+                                else{
+                                    if(simDev->m_rigidGrippingConstraints[sIdx]){
+                                        g_afWorld->m_bulletWorld->removeConstraint(simDev->m_rigidGrippingConstraints[sIdx]);
+                                        simDev->m_rigidGrippingConstraints[sIdx] = 0;
+                                    }
+                                    if(simDev->m_softGrippingConstraints[sIdx]){
+                                        for (int nIdx = 0 ; nIdx < simDev->m_softGrippingConstraints[sIdx]->m_nodePtrs.size()  ; nIdx++){
+                                            btSoftBody::Node* _nodePtr = simDev->m_softGrippingConstraints[sIdx]->m_nodePtrs[nIdx];
+                                            btSoftBody* _sBody = simDev->m_softGrippingConstraints[sIdx]->m_sBody;
+                                            btRigidBody* _rBody = simDev->m_softGrippingConstraints[sIdx]->m_rBody;
+                                            for (int aIdx = 0 ; aIdx < _sBody->m_anchors.size() ; aIdx++){
+                                                if (_sBody->m_anchors[aIdx].m_body == _rBody){
+                                                    btSoftBody::Anchor* _anchor = &_sBody->m_anchors[aIdx];
+                                                    if (_anchor->m_node == _nodePtr){
+                                                        _sBody->m_anchors.removeAtIndex(aIdx);
+                                                        break;
+                                                    }
                                                 }
                                             }
                                         }
+                                        simDev->m_softGrippingConstraints[sIdx] = 0;
                                     }
-                                    simDev->m_softGrippingConstraints[sIdx] = 0;
                                 }
                             }
                         }
                     }
                 }
 
-                cVector3d force, torque;
+                cVector3d pCommand, rCommand;
                 // ts is to prevent the saturation of forces
                 double ts = dt_fixed / step_size;
-                double dt = g_chaiBulletWorld->getSimulationDeltaTime();
-                force = phyDev->m_controller.computeOutput<cVector3d>(simDev->m_pos, simDev->getPosRef(), dt, 1);
-                force = simDev->P_lc_ramp * force;
+                pCommand = phyDev->m_controller.computeOutput<cVector3d>(simDev->m_pos, simDev->getPosRef(), step_size, 1);
+                pCommand = simDev->P_lc_ramp * pCommand;
 
-                torque = phyDev->m_controller.computeOutput<cVector3d>(simDev->m_rot, simDev->getRotRef(), dt, 1);
-                simDev->applyForce(force);
-                simDev->applyTorque(torque);
+                rCommand = phyDev->m_controller.computeOutput<cVector3d>(simDev->m_rot, simDev->getRotRef(), step_size, 1);
+//                simDev->applyForce(force);
+//                simDev->applyTorque(torque);
+
+                simDev->m_rootLink->m_bulletRigidBody->setLinearVelocity(afUtils::convertDataType<btVector3, cVector3d>(pCommand));
+                simDev->m_rootLink->m_bulletRigidBody->setAngularVelocity(afUtils::convertDataType<btVector3, cVector3d>(rCommand));
                 // Control simulated body joints only if joint control of this physical device has been enabled
                 if (phyDev->isJointControlEnabled()){
-                    simDev->setGripperAngle(simDev->m_gripper_angle, dt);
+                    simDev->setGripperAngle(simDev->m_gripper_angle);
                 }
 
                 if (simDev->P_lc_ramp < 1.0)
                 {
-                    simDev->P_lc_ramp = simDev->P_lc_ramp + 0.5 * dt;
+                    simDev->P_lc_ramp = simDev->P_lc_ramp + 0.5 * step_size;
                 }
                 else
                 {
@@ -1561,16 +1685,15 @@ void updatePhysics(){
 
                 if (simDev->P_ac_ramp < 1.0)
                 {
-                    simDev->P_ac_ramp = simDev->P_ac_ramp + 0.5 * dt;
+                    simDev->P_ac_ramp = simDev->P_ac_ramp + 0.5 * step_size;
                 }
                 else
                 {
                     simDev->P_ac_ramp = 1.0;
                 }
             }
-            g_chaiBulletWorld->updateDynamics(step_size, g_afWorld->g_wallClock.getCurrentTimeSeconds(), g_freqCounterHaptics.getFrequency(), g_inputDevices->m_numDevices);
-        }
-            rateSleep.sleep();
+            g_afWorld->updateDynamics(step_size, g_afWorld->g_wallClock.getCurrentTimeSeconds(), g_freqCounterHaptics.getFrequency(), g_inputDevices->m_numDevices);
+            phxSleep.sleep();
     }
     g_simulationFinished = true;
 }
@@ -1585,7 +1708,7 @@ void updateHapticDevice(void* a_arg){
     g_simulationRunning = true;
     g_simulationFinished = false;
 
-    RateSleep rateSleep(g_cmdOpts.htxFrequency);
+    RateSleep htxSleep(g_cmdOpts.htxFrequency);
 
     // update position and orientation of simulated gripper
     std::string identifyingName = g_inputDevices->m_collateralControlUnits[devIdx].m_name;
@@ -1630,7 +1753,7 @@ void updateHapticDevice(void* a_arg){
     // main haptic simulation loop
     while(g_simulationRunning)
     {
-        if (!g_afWorld->isPhysicsPaused()){
+        if (!g_afWorld->isPhysicsPaused() || g_afWorld->getManualSteps() > 0){
             phyDev->m_freq_ctr.signal(1);
             if (devFreqLabel != NULL){
                 devFreqLabel->setText(identifyingName + " [" + phyDev->m_hInfo.m_modelName + "] " + ": " + cStr(phyDev->m_freq_ctr.getFrequency(), 0) + " Hz");
@@ -1842,7 +1965,7 @@ void updateHapticDevice(void* a_arg){
             }
 
         }
-        rateSleep.sleep();
+        htxSleep.sleep();
     }
     // exit haptics thread
 }
