@@ -1,6 +1,6 @@
 #  Software License Agreement (BSD License)
-#  Copyright (c) 2019, AMBF.
-#  (www.aimlab.wpi.edu)
+#  Copyright (c) 2020, AMBF.
+#  (https://github.com/WPI-AIM/ambf)
 #
 #  All rights reserved.
 #
@@ -33,30 +33,57 @@
 #  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 #  POSSIBILITY OF SUCH DAMAGE.
 #
-#  $Author: Melody Su $
+#  $Author: Adnan Munawar, Melody Su, Nathaniel Goldfarb, Shreyas Chandra Sekhar$$
 #  $Date:  April, 2019 $
-#  $Rev:  $
+#  $Rev: 1.0$
 
 # common settings required to build examples
 find_package (GLFW REQUIRED)
 find_package (Boost COMPONENTS program_options filesystem REQUIRED)
 
 include_directories (${GLFW_INCLUDE_DIRS}
-                     raven2/include 
-		     ambf_client/include
+                     raven2/include
+                     dvrk/cpp_controller/include
 )
 
 add_executable (ambf_controller raven2/include/ambf_defines.h
                                 raven2/include/ambf_controller.h
                                 raven2/include/ambf_motion_planner.h
                                 raven2/src/ambf_motion_planner.cpp
-                                raven2/src/ambf_controller.cpp 
+                                raven2/src/ambf_controller.cpp
                                 raven2/src/ambf_defines.cpp
                                 raven2/src/main.cpp )
 
+
+
 target_link_libraries (ambf_controller ${AMBF_LIBRARIES} ${GLFW_LIBRARIES} ${Boost_LIBRARIES})
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ambf_client)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ambf_client_app)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ambf_client_test)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/rbdl_model)
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty)
+
+set (PSM_IK_HDR_FILES
+    dvrk/cpp_controller/include/psm_ik_test.h
+    dvrk/cpp_controller/include/DH.h
+    dvrk/cpp_controller/include/Utilities.h)
+
+set(PSM_IK_SOURCE_FILES
+    dvrk/cpp_controller/src/psm_ik_test.cpp
+    dvrk/cpp_controller/src/DH.cpp
+    dvrk/cpp_controller/src/Utilities.cpp)
+
+add_executable (psm_ik_test  ${PSM_IK_HDR_FILES} ${PSM_IK_SOURCE_FILES})
+target_link_libraries (psm_ik_test ${AMBF_LIBRARIES} ${AMBF_CLIEMT_LIBRARIES} ${GLFW_LIBRARIES} ${Boost_LIBRARIES} ambf_client_cpp)
+
+
+set (ECM_IK_HDR_FILES
+    dvrk/cpp_controller/include/ecm_ik_test.h
+    dvrk/cpp_controller/include/DH.h
+    dvrk/cpp_controller/include/Utilities.h)
+
+set(ECM_IK_SOURCE_FILES
+    dvrk/cpp_controller/src/ecm_ik_test.cpp
+    dvrk/cpp_controller/src/DH.cpp
+    dvrk/cpp_controller/src/Utilities.cpp)
+
+add_executable (ecm_ik_test  ${ECM_IK_HDR_FILES} ${ECM_IK_SOURCE_FILES})
+target_link_libraries (ecm_ik_test ${AMBF_LIBRARIES} ${AMBF_CLIEMT_LIBRARIES} ${GLFW_LIBRARIES} ${Boost_LIBRARIES} ambf_client_cpp)
+
+
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/dvrk)

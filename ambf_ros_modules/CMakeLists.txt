@@ -1,6 +1,6 @@
 #  Software License Agreement (BSD License)
-#  Copyright (c) 2019, AMBF.
-#  (www.aimlab.wpi.edu)
+#  Copyright (c) 2020, AMBF.
+#  (https://github.com/WPI-AIM/ambf)
 #
 #  All rights reserved.
 #
@@ -40,3 +40,4 @@
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ambf_msgs)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ambf_comm)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/dvrk_arm)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ambf_client)

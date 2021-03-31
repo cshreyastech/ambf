@@ -5,6 +5,22 @@ environment: "./checkered_floor.yaml"
 namespace: /ambf/env/
 max iterations: 50
 gravity: {x: 0.0, y: 0.0, z: -9.81}
+# shaders:
+#   path: ../../ambf_shaders/normal_map
+#   vertex: "shader.vs"
+#   fragment: "shader.fs"
+# skybox: # Uncomment to load this skybox
+#   path: ./skybox/ocean_and_mountains
+#   right: px.png
+#   left:  nx.png
+#   top: py.png
+#   bottom: ny.png
+#   front: pz.png
+#   back: nz.png
+#   shaders:
+#     path: ./skybox/
+#     vertex: "shader.vs"
+#     fragment: "shader.fs"
 
 light1:
   namespace: /ambf/env/lights/
@@ -12,7 +28,7 @@ light1:
   location: {x: 0.0, y: 0.5, z: 2.5}
   direction: {x: 0, y: 0, z: -1.0}
   spot exponent: 0.3
-  shadow quality: 0
+  shadow quality: 5
   cutoff angle: 0.7
 
 light2:
@@ -21,7 +37,7 @@ light2:
   location: {x: 0.5, y: -1, z: 2.5}
   direction: {x: 0, y: 0, z: -1.0}
   spot exponent: 0.3
-  shadow quality: 2
+  shadow quality: 0
   cutoff angle: 0.7
 
 light3:
@@ -38,10 +54,14 @@ camera1:
   location: {x: 4.0, y: 0.0, z: 2.0}
   look at: {x: 0.0, y: 0.0, z: -0.5}
   up: {x: 0.0, y: 0.0, z: 1.0}
-  clipping plane: {near: 0.01, far: 50.0}
+  clipping plane: {near: 0.1, far: 10.0}
   field view angle: 0.8
   monitor: 0
   # multipass: True
+  # publish image: True
+  # publish image interval: 1 # Publish every nth scene update
+  # publish depth: True
+  # publish depth interval: 10 # Publish every nth scene update
 
 # This example is to show how to parent w.r.t another body.
 # When a parent is defined, the location, look at and up

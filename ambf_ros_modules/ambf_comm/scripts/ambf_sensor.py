@@ -1,29 +1,28 @@
 #!/usr/bin/env python
-#!/usr/bin/env python
 # //==============================================================================
 # /*
 #     Software License Agreement (BSD License)
-#     Copyright (c) 2019, AMBF
-#     (www.aimlab.wpi.edu)
-
+#     Copyright (c) 2020, AMBF
+#     (https://github.com/WPI-AIM/ambf)
+#
 #     All rights reserved.
-
+#
 #     Redistribution and use in source and binary forms, with or without
 #     modification, are permitted provided that the following conditions
 #     are met:
-
+#
 #     * Redistributions of source code must retain the above copyright
 #     notice, this list of conditions and the following disclaimer.
-
+#
 #     * Redistributions in binary form must reproduce the above
 #     copyright notice, this list of conditions and the following
 #     disclaimer in the documentation and/or other materials provided
 #     with the distribution.
-
+#
 #     * Neither the name of authors nor the names of its contributors may
 #     be used to endorse or promote products derived from this software
 #     without specific prior written permission.
-
+#
 #     THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 #     "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 #     LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
@@ -36,11 +35,10 @@
 #     LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 #     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 #     POSSIBILITY OF SUCH DAMAGE.
-
-#     \author    <http://www.aimlab.wpi.edu>
+#
 #     \author    <amunawar@wpi.edu>
 #     \author    Adnan Munawar
-#     \version   0.1
+#     \version   1.0
 # */
 # //==============================================================================
 
@@ -86,6 +84,7 @@ class Sensor(BaseObject):
         Get the range of an element belonging to this sensor
         :return:
         """
+        # print(self._state.range)
         return self._state.range[idx]
 
     def get_measurement(self, idx):
@@ -97,6 +96,15 @@ class Sensor(BaseObject):
         if idx < len(self._state.measurement):
             return self._state.measurement[idx]
 
+    def get_all_measurements(self):
+        """
+        Get the measurement of a specific sensor element. The value is normalized.
+        :param idx:
+        :return:
+        """
+        
+        return self._state.measurement
+
     def get_sensed_object(self, idx):
         """
         Get the name of sensed object by a specific sensor element.
@@ -105,3 +113,20 @@ class Sensor(BaseObject):
         """
         if idx < len(self._state.sensed_objects):
             return self._state.sensed_objects[idx].data
+
+
+    def get_parent(self):
+        """
+        Get the name of the parent
+        :return String
+        """
+        return self._state.parent_name
+
+    def get_pose(self):
+
+        """
+        Get the pose of the sensor
+        :return geometry_msgs/Pose
+        """
+        return self._state.pose
+

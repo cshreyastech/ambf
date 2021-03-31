@@ -1,8 +1,8 @@
 //==============================================================================
 /*
     Software License Agreement (BSD License)
-    Copyright (c) 2019, AMBF
-    (www.aimlab.wpi.edu)
+    Copyright (c) 2020, AMBF
+    (https://github.com/WPI-AIM/ambf)
 
     All rights reserved.
 
@@ -35,10 +35,9 @@
     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
 
-    \author:    <http://www.aimlab.wpi.edu>
-    \author:    <amunawar@wpi.edu>
-    \author:    Adnan Munawar
-    \version:   $
+    \author    <amunawar@wpi.edu>
+    \author    Adnan Munawar
+    \version   1.0$
 */
 //==============================================================================
 
@@ -90,6 +89,26 @@ void afSharedDataStructure::setRotRef(cMatrix3d a_rot){
 
 
 ///
+/// \brief afSharedDataStructure::setPosRefOrigin
+/// \param a_pos
+///
+void afSharedDataStructure::setPosRefOrigin(cVector3d a_pos){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_posRefOrigin = a_pos;
+}
+
+
+///
+/// \brief afSharedDataStructure::setRotRefOrigin
+/// \param a_rot
+///
+void afSharedDataStructure::setRotRefOrigin(cMatrix3d a_rot){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_rotRefOrigin = a_rot;
+}
+
+
+///
 /// \brief afSharedDataStructure::getPosRef
 /// \return
 ///
@@ -106,6 +125,33 @@ cMatrix3d afSharedDataStructure::getRotRef(){
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_rotRef;
 }
+
+
+
+///
+/// \brief afSharedDataStructure::getPosRef
+/// \return
+///
+cVector3d afSharedDataStructure::getPosRefOrigin(){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_posRefOrigin;
+}
+
+///
+/// \brief afSharedDataStructure::getRotRef
+/// \return
+///
+cMatrix3d afSharedDataStructure::getRotRefOrigin(){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_rotRefOrigin;
+}
+
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////   PHYSICAL DEVICE   ////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 ///
 /// \brief afPhysicalDevice::~afPhysicalDevice
@@ -271,6 +317,14 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
                 _devFound = true;
                 break;
             }
+            else{
+                std::shared_ptr<cGenericHapticDevice> gHD;
+                if (hDevHandler->getDevice(gHD, dIdx)){
+                    // Workaround for proper cleanup
+                    gHD->open();
+                    gHD->close();
+                }
+            }
         }
     }
 
@@ -326,6 +380,7 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
 
     if (_simulatedMBDefined){
         if (!simDevice->loadMultiBody(_simulatedMBConfig, false)){
+            m_hDevice->close();
             return 0;
         }
         boost::filesystem::path p(_simulatedMBConfig);
@@ -340,14 +395,13 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
             simDevice->m_rootLink = simDevice->getRootAFRigidBodyLocal();
         }
     }
-    // If only root link is defined, we are going to look for it in the global space
+    // If only the root link is defined, we are going to look for it in the global space
     else if (_rootLinkDefined){
         if (a_iD->getAFWorld()->getAFRigidBody(_rootLinkName, false)){
             simDevice->m_rootLink = a_iD->getAFWorld()->getAFRigidBody(_rootLinkName);
         }
     }
 
-    // If we cannot find any root link, return failure
     if (simDevice->m_rootLink){
         // Now check if the controller gains have been defined. If so, override the controller gains
         // defined for the rootlink of simulate end effector
@@ -364,6 +418,7 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
                 _D = pDControllerGain["linear"]["D"].as<double>();
                 m_controller.setLinearGains(_P, 0, _D);
                 linGainsDefined = true;
+                m_controller.m_positionOutputType == afControlType::force;
             }
 
             // Check if the angular controller is defined
@@ -373,6 +428,7 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
                 _D = pDControllerGain["angular"]["D"].as<double>();
                 m_controller.setAngularGains(_P, 0, _D);
                 angGainsDefined = true;
+                m_controller.m_orientationOutputType == afControlType::force;
             }
         }
         if(!linGainsDefined){
@@ -381,6 +437,8 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
             m_controller.setLinearGains(simDevice->m_rootLink->m_controller.getP_lin(),
                                         0,
                                         simDevice->m_rootLink->m_controller.getD_lin());
+
+            m_controller.m_positionOutputType = simDevice->m_rootLink->m_controller.m_positionOutputType;
         }
         if (!angGainsDefined){
             // If not controller gains defined for this physical device's simulated body,
@@ -388,6 +446,8 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
             m_controller.setAngularGains(simDevice->m_rootLink->m_controller.getP_ang(),
                                          0,
                                          simDevice->m_rootLink->m_controller.getD_ang());
+
+            m_controller.m_orientationOutputType = simDevice->m_rootLink->m_controller.m_orientationOutputType;
         }
 
         // Read the flag to enable disable the joint control of SDE from this input device
@@ -421,7 +481,7 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
         // running
         if(_simulatedMBDefined){
             std::string _sDevName = "simulated_device_" + std::to_string(a_iD->s_inputDeviceCount) + _modelName;
-            simDevice->m_rootLink->afCreateCommInstance(afCommType::OBJECT,
+            simDevice->m_rootLink->afCreateCommInstance(afCommType::RIGID_BODY,
                                                         _sDevName,
                                                         m_afWorld->resolveGlobalNamespace(simDevice->getNamespace()),
                                                         simDevice->m_rootLink->getMinPublishFrequency(),
@@ -429,6 +489,7 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
         }
     }
     else{
+        m_hDevice->close();
         return 0;
     }
 
@@ -456,9 +517,9 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
     }
 
     simDevice->setPosRef(position/ m_workspaceScale);
-    simDevice->m_posRefOrigin = position / m_workspaceScale;
+    simDevice->setPosRefOrigin(position / m_workspaceScale);
     simDevice->setRotRef(rotation);
-    simDevice->m_rotRefOrigin = rotation;
+    simDevice->setRotRefOrigin(rotation);
     m_gripper_pinch_btn = 0;
 
     if (pDOrientationOffset.IsDefined()){
@@ -469,6 +530,8 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
     else{
         m_simRotOffset.identity();
     }
+
+    m_simRotOffset.transr(m_simRotOffsetInverse);
 
     if (pDButtonMapping.IsDefined()){
         if (pDButtonMapping["a1"].IsDefined()){
@@ -515,8 +578,7 @@ bool afPhysicalDevice::loadPhysicalDevice(YAML::Node *pd_node, std::string node_
         m_afWorld->addChild(m_refSphere);
     }
 
-
-    return 1;
+    return true;
 }
 
 
@@ -552,98 +614,173 @@ void afPhysicalDevice::createAfCursor(afWorldPtr a_afWorld, std::string a_name, 
     m_afWorld = a_afWorld;
 }
 
+
 ///
 /// \brief afPhysicalDevice::measuredPos
 /// \return
 ///
-cVector3d afPhysicalDevice::measuredPos(){
+cVector3d afPhysicalDevice::getPos(){
     std::lock_guard<std::mutex> lock(m_mutex);
     m_hDevice->getPosition(m_pos);
-    updateCursorPose();
     return m_pos;
 }
 
+
 ///
-/// \brief afPhysicalDevice::measuredPosPreclutch
+/// \brief afPhysicalDevice::getPosClutched
 /// \return
 ///
-cVector3d afPhysicalDevice::measuredPosPreclutch(){
+cVector3d afPhysicalDevice::getPosClutched(){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_posClutched;
+}
+
+
+///
+/// \brief afPhysicalDevice::getPosPreClutch
+/// \return
+///
+cVector3d afPhysicalDevice::getPosPreClutch(){
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_posPreClutch;
 }
 
-///
-/// \brief afPhysicalDevice::setPosPreclutch
-/// \param a_pos
-///
-void afPhysicalDevice::setPosPreclutch(cVector3d a_pos){
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_posPreClutch = a_pos;
-}
 
 ///
-/// \brief afPhysicalDevice::measuredRot
+/// \brief afPhysicalDevice::getPosCamPreClutch
 /// \return
 ///
-cMatrix3d afPhysicalDevice::measuredRot(){
+cVector3d afPhysicalDevice::getPosCamPreClutch(){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_posCamPreClutch;
+}
+
+
+///
+/// \brief afPhysicalDevice::getRot
+/// \return
+///
+cMatrix3d afPhysicalDevice::getRot(){
     std::lock_guard<std::mutex> lock(m_mutex);
     m_hDevice->getRotation(m_rot);
     return m_rot;
 }
 
+
 ///
-/// \brief afPhysicalDevice::measuredRotPreclutch
+/// \brief afPhysicalDevice::getRotClutched
 /// \return
 ///
-cMatrix3d afPhysicalDevice::measuredRotPreclutch(){
+cMatrix3d afPhysicalDevice::getRotClutched(){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_rotClutched;
+}
+
+
+///
+/// \brief afPhysicalDevice::getRotPreClutch
+/// \return
+///
+cMatrix3d afPhysicalDevice::getRotPreClutch(){
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_rotPreClutch;
 }
 
+
 ///
-/// \brief afPhysicalDevice::setRotPreclutch
+/// \brief afPhysicalDevice::measuredRotCamPreclutch
+/// \return
+///
+cMatrix3d afPhysicalDevice::getRotCamPreClutch(){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_rotCamPreClutch;
+}
+
+
+///
+/// \brief afPhysicalDevice::setPosClutched
+/// \param a_pos
+///
+void afPhysicalDevice::setPosClutched(cVector3d a_pos){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_posClutched = a_pos;
+}
+
+
+///
+/// \brief afPhysicalDevice::setPosPreClutch
+/// \param a_pos
+///
+void afPhysicalDevice::setPosPreClutch(cVector3d a_pos){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_posPreClutch = a_pos;
+}
+
+
+///
+/// \brief afPhysicalDevice::setPosCamPreClutch
+/// \param a_pos
+///
+void afPhysicalDevice::setPosCamPreClutch(cVector3d a_pos){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_posCamPreClutch = a_pos;
+}
+
+
+///
+/// \brief afPhysicalDevice::setRotClutched
 /// \param a_rot
 ///
-void afPhysicalDevice::setRotPreclutch(cMatrix3d a_rot){
+void afPhysicalDevice::setRotClutched(cMatrix3d a_rot){
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_rotClutched = a_rot;
+}
+
+
+///
+/// \brief afPhysicalDevice::setRotPreClutch
+/// \param a_rot
+///
+void afPhysicalDevice::setRotPreClutch(cMatrix3d a_rot){
     std::lock_guard<std::mutex> lock(m_mutex);
     m_rotPreClutch = a_rot;
 }
 
 
 ///
-/// \brief afPhysicalDevice::measuredPosCamPreclutch
-/// \return
-///
-cVector3d afPhysicalDevice::measuredPosCamPreclutch(){
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_posCamPreClutch;
-}
-
-///
-/// \brief afPhysicalDevice::setPosCamPreclutch
-/// \param a_pos
-///
-void afPhysicalDevice::setPosCamPreclutch(cVector3d a_pos){
-    std::lock_guard<std::mutex> lock(m_mutex);
-    m_posCamPreClutch = a_pos;
-}
-
-///
-/// \brief afPhysicalDevice::measuredRotCamPreclutch
-/// \return
-///
-cMatrix3d afPhysicalDevice::measuredRotCamPreclutch(){
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_rotCamPreClutch;
-}
-
-///
 /// \brief afPhysicalDevice::setRotCamPreclutch
 /// \param a_rot
 ///
-void afPhysicalDevice::setRotCamPreclutch(cMatrix3d a_rot){
+void afPhysicalDevice::setRotCamPreClutch(cMatrix3d a_rot){
     std::lock_guard<std::mutex> lock(m_mutex);
     m_rotCamPreClutch = a_rot;
+}
+
+
+///
+/// \brief afPhysicalDevice::getSimRotInitial
+/// \return
+///
+cMatrix3d afPhysicalDevice::getSimRotInitial(){
+    return m_simRotInitial;
+}
+
+
+///
+/// \brief afPhysicalDevice::getSimRotOffset
+/// \return
+///
+cMatrix3d afPhysicalDevice::getSimRotOffset(){
+    return m_simRotOffset;
+}
+
+
+///
+/// \brief afPhysicalDevice::getSimRotOffsetInverse
+/// \return
+///
+cMatrix3d afPhysicalDevice::getSimRotOffsetInverse(){
+    return m_simRotOffsetInverse;
 }
 
 ///
@@ -660,31 +797,34 @@ void afPhysicalDevice::updateCursorPose(){
     }
 }
 
+
 ///
-/// \brief afPhysicalDevice::measuredVelLin
+/// \brief afPhysicalDevice::getLinVel
 /// \return
 ///
-cVector3d afPhysicalDevice::measuredVelLin(){
+cVector3d afPhysicalDevice::getLinVel(){
     std::lock_guard<std::mutex> lock(m_mutex);
     m_hDevice->getLinearVelocity(m_vel);
     return m_vel;
 }
 
+
 ///
-/// \brief afPhysicalDevice::mearuredVelAng
+/// \brief afPhysicalDevice::getAngVel
 /// \return
 ///
-cVector3d afPhysicalDevice::mearuredVelAng(){
+cVector3d afPhysicalDevice::getAngVel(){
     std::lock_guard<std::mutex> lock(m_mutex);
     m_hDevice->getAngularVelocity(m_avel);
     return m_avel;
 }
 
+
 ///
 /// \brief afPhysicalDevice::measuredGripperAngle
 /// \return
 ///
-double afPhysicalDevice::measuredGripperAngle(){
+double afPhysicalDevice::getGripperAngle(){
     std::lock_guard<std::mutex> lock(m_mutex);
     double angle;
     m_hDevice->getGripperAngleRad(angle);
@@ -758,6 +898,11 @@ void afPhysicalDevice::applyWrench(cVector3d force, cVector3d torque){
     m_hDevice->setForceAndTorqueAndGripperForce(force, torque, 0.0);
 }
 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////   SIMULATED DEVICE   ///////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+
 ///
 /// \brief afSimulatedDevice::afSimulatedDevice
 /// \param a_afWorld
@@ -768,11 +913,12 @@ afSimulatedDevice::afSimulatedDevice(afWorldPtr a_afWorld): afMultiBody (a_afWor
     P_ac_ramp = 0;
 }
 
+
 ///
 /// \brief afSimulatedDevice::measuredPos
 /// \return
 ///
-cVector3d afSimulatedDevice::measuredPos(){
+cVector3d afSimulatedDevice::getPos(){
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_rootLink->getLocalPos();
 }
@@ -781,7 +927,7 @@ cVector3d afSimulatedDevice::measuredPos(){
 /// \brief afSimulatedDevice::measuredRot
 /// \return
 ///
-cMatrix3d afSimulatedDevice::measuredRot(){
+cMatrix3d afSimulatedDevice::getRot(){
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_rootLink->getLocalRot();
 }
@@ -789,7 +935,7 @@ cMatrix3d afSimulatedDevice::measuredRot(){
 ///
 /// \brief afSimulatedDevice::updateMeasuredPose
 ///
-void afSimulatedDevice::updateMeasuredPose(){
+void afSimulatedDevice::updatePose(){
     std::lock_guard<std::mutex> lock(m_mutex);
     m_pos  = m_rootLink->getLocalPos();
     m_rot = m_rootLink->getLocalRot();
@@ -798,9 +944,8 @@ void afSimulatedDevice::updateMeasuredPose(){
 ///
 /// \brief afSimulatedDevice::setGripperAngle
 /// \param angle
-/// \param dt
 ///
-void afSimulatedDevice::setGripperAngle(double angle, double dt){
+void afSimulatedDevice::setGripperAngle(double angle){
     // Since it's not desireable to control the exact angle of multiple joints in the gripper.
     // We override the set angle method for grippers to simplify the angle bound. 0 for closed
     // and 1 for open and everything in between is scaled.
@@ -808,7 +953,7 @@ void afSimulatedDevice::setGripperAngle(double angle, double dt){
     for (size_t jntIdx = 0 ; jntIdx < m_rootLink->m_CJ_PairsAll.size() ; jntIdx++){
         afJointPtr joint = m_rootLink->m_CJ_PairsAll[jntIdx].m_childJoint;
         double ang = joint->getLowerLimit() + clipped_angle * (joint->getUpperLimit() - joint->getLowerLimit());
-        joint->commandPosition(ang, dt);
+        joint->commandPosition(ang);
     }
 }
 
@@ -846,7 +991,7 @@ void afSimulatedDevice::clearWrench(){
 /// \param a_afWorld
 ///
 afCollateralControlManager::afCollateralControlManager(afWorldPtr a_afWorld){
-    m_deviceHandler = NULL;
+    m_deviceHandler = nullptr;
     m_afWorld = a_afWorld;
 
     m_use_cam_frame_rot = true;
@@ -859,6 +1004,14 @@ afCollateralControlManager::afCollateralControlManager(afWorldPtr a_afWorld){
 /// \brief afInputDevices::~afInputDevices
 ///
 afCollateralControlManager::~afCollateralControlManager(){
+    for (int i = 0 ; i < m_collateralControlUnits.size() ; i++){
+        if (m_collateralControlUnits[i].m_physicalDevicePtr != nullptr){
+            delete m_collateralControlUnits[i].m_physicalDevicePtr;
+        }
+        if (m_collateralControlUnits[i].m_simulatedDevicePtr != nullptr){
+            delete m_collateralControlUnits[i].m_simulatedDevicePtr;
+        }
+    }
 }
 
 
@@ -930,6 +1083,7 @@ bool afCollateralControlManager::pairCamerasToCCU(afCollateralControlUnit& a_ccu
             a_ccuPtr.m_cameras.push_back(camPtr);
         }
     }
+    return true;
 }
 
 
@@ -940,57 +1094,11 @@ bool afCollateralControlManager::pairCamerasToCCU(afCollateralControlUnit& a_ccu
 /// \return
 ///
 bool afCollateralControlManager::loadInputDevices(std::string a_input_devices_config, int a_max_load_devs){
-    if (a_input_devices_config.empty()){
-        a_input_devices_config = m_afWorld->getInputDevicesConfig();
+    std::vector<int> devIdxes;
+    for (int i = 0 ; i < a_max_load_devs ; i++){
+        devIdxes.push_back(i);
     }
-    YAML::Node inputDevicesNode;
-    try{
-        inputDevicesNode = YAML::LoadFile(a_input_devices_config);
-    }catch (std::exception &e){
-        std::cerr << "[Exception]: " << e.what() << std::endl;
-        std::cerr << "ERROR! FAILED TO LOAD CONFIG FILE: " << a_input_devices_config << std::endl;
-        return 0;
-    }
-
-    YAML::Node inputDevices = inputDevicesNode["input devices"];
-
-    m_basePath = boost::filesystem::path(a_input_devices_config).parent_path();
-
-    if (!inputDevices.IsDefined()){
-        return 0;
-    }
-
-    if (a_max_load_devs > 0){
-        m_deviceHandler.reset(new cHapticDeviceHandler());
-        a_max_load_devs = a_max_load_devs < inputDevices.size() ? a_max_load_devs : inputDevices.size();
-        //        std::cerr << "Num of devices " << m_num_devices << std::endl;
-        for (uint devIdx = 0; devIdx < a_max_load_devs; devIdx++){
-
-            afPhysicalDevice* pD = new afPhysicalDevice(m_afWorld);
-            afSimulatedDevice* sD = new afSimulatedDevice(m_afWorld);
-
-            // Load the device specified in the afInputDevice yaml file
-            std::string devKey = inputDevices[devIdx].as<std::string>();
-            YAML::Node devNode = inputDevicesNode[devKey];
-
-            if (pD->loadPhysicalDevice(&devNode, devKey, m_deviceHandler.get(), sD, this)){
-                afCollateralControlUnit ccu;
-                ccu.m_physicalDevicePtr = pD;
-                ccu.m_simulatedDevicePtr = sD;
-                ccu.m_name = devKey;
-                pairCamerasToCCU(ccu);
-                m_collateralControlUnits.push_back(ccu);
-            }
-        }
-        m_numDevices = m_collateralControlUnits.size();
-    }
-    else{
-        m_numDevices = 0;
-    }
-    m_use_cam_frame_rot = true;
-    m_simModes = CAM_CLUTCH_CONTROL;
-    m_mode_str = "CAM_CLUTCH_CONTROL";
-    m_mode_idx = 0;
+    return loadInputDevices(a_input_devices_config, devIdxes);
 }
 
 
@@ -1021,9 +1129,12 @@ bool afCollateralControlManager::loadInputDevices(std::string a_input_devices_co
         return 0;
     }
 
-    if (a_device_indices.size() >= 0 && a_device_indices.size() <= inputDevices.size()){
+    bool load_status = false;
+
+    int valid_dev_idxs = cMin(a_device_indices.size(), inputDevices.size());
+    if (valid_dev_idxs > 0){
         m_deviceHandler.reset(new cHapticDeviceHandler());
-        for (int i = 0; i < a_device_indices.size(); i++){
+        for (int i = 0; i < valid_dev_idxs; i++){
             int devIdx = a_device_indices[i];
             if (devIdx >=0 && devIdx < inputDevices.size()){
                 afPhysicalDevice* pD = new afPhysicalDevice(m_afWorld);
@@ -1038,26 +1149,35 @@ bool afCollateralControlManager::loadInputDevices(std::string a_input_devices_co
                     ccu.m_physicalDevicePtr = pD;
                     ccu.m_simulatedDevicePtr = sD;
                     ccu.m_name = devKey;
+                    pairCamerasToCCU(ccu);
                     m_collateralControlUnits.push_back(ccu);
+                    load_status = true;
                 }
                 else
                 {
                     std::cerr << "WARNING: FAILED TO LOAD DEVICE: \"" << devKey << "\"\n";
+                    load_status = false;
+                    delete pD;
+                    delete sD;
                 }
             }
             else{
                 std::cerr << "ERROR: DEVICE INDEX : \"" << devIdx << "\" > \"" << inputDevices.size() << "\" NO. OF DEVICE SPECIFIED IN \"" << a_input_devices_config << "\"\n";
+                load_status = false;
             }
         }
     }
     else{
         std::cerr << "ERROR: SIZE OF DEVICE INDEXES : \"" << a_device_indices.size() << "\" > NO. OF DEVICE SPECIFIED IN \"" << a_input_devices_config << "\"\n";
+        load_status = false;
     }
+
     m_numDevices = m_collateralControlUnits.size();
     m_use_cam_frame_rot = true;
     m_simModes = CAM_CLUTCH_CONTROL;
     m_mode_str = "CAM_CLUTCH_CONTROL";
     m_mode_idx = 0;
+    return load_status;
 }
 
 
@@ -1108,9 +1228,9 @@ void afCollateralControlManager::nextMode(){
     m_mode_idx = (m_mode_idx + 1) % m_modes_enum_vec.size();
     m_simModes = m_modes_enum_vec[m_mode_idx];
     m_mode_str = m_modes_enum_str[m_mode_idx];
-    g_btn_action_str = "";
-    g_cam_btn_pressed = false;
-    g_clutch_btn_pressed = false;
+    m_btn_action_str = "";
+    m_cam_btn_pressed = false;
+    m_clutch_btn_pressed = false;
     std::cout << m_mode_str << std::endl;
 }
 
@@ -1121,9 +1241,9 @@ void afCollateralControlManager::prevMode(){
     m_mode_idx = (m_mode_idx - 1) % m_modes_enum_vec.size();
     m_simModes = m_modes_enum_vec[m_mode_idx];
     m_mode_str = m_modes_enum_str[m_mode_idx];
-    g_btn_action_str = "";
-    g_cam_btn_pressed = false;
-    g_clutch_btn_pressed = false;
+    m_btn_action_str = "";
+    m_cam_btn_pressed = false;
+    m_clutch_btn_pressed = false;
     std::cout << m_mode_str << std::endl;
 }
 
@@ -1155,7 +1275,7 @@ double afCollateralControlManager::increment_K_lh(double a_offset){
     //Set the return value to the gain of the last device
     if(m_numDevices > 0){
         a_offset = m_collateralControlUnits[m_numDevices-1].m_physicalDevicePtr->K_lh;
-        g_btn_action_str = "K_lh = " + cStr(a_offset, 4);
+        m_btn_action_str = "K_lh = " + cStr(a_offset, 4);
     }
     return a_offset;
 }
@@ -1177,7 +1297,7 @@ double afCollateralControlManager::increment_K_ah(double a_offset){
     //Set the return value to the gain of the last device
     if(m_numDevices > 0){
         a_offset = m_collateralControlUnits[m_numDevices-1].m_physicalDevicePtr->K_ah;
-        g_btn_action_str = "K_ah = " + cStr(a_offset, 4);
+        m_btn_action_str = "K_ah = " + cStr(a_offset, 4);
     }
     return a_offset;
 }
@@ -1202,7 +1322,7 @@ double afCollateralControlManager::increment_P_lc(double a_offset){
         }
     }
 
-    g_btn_action_str = "P_lc = " + cStr(_temp, 4);
+    m_btn_action_str = "P_lc = " + cStr(_temp, 4);
     return _temp;
 }
 
@@ -1226,7 +1346,7 @@ double afCollateralControlManager::increment_P_ac(double a_offset){
         }
     }
 
-    g_btn_action_str = "P_ac = " + cStr(_temp, 4);
+    m_btn_action_str = "P_ac = " + cStr(_temp, 4);
     return _temp;
 }
 
@@ -1251,7 +1371,7 @@ double afCollateralControlManager::increment_D_lc(double a_offset){
         }
     }
 
-    g_btn_action_str = "D_lc = " + cStr(_temp, 4);
+    m_btn_action_str = "D_lc = " + cStr(_temp, 4);
     return _temp;
 }
 
@@ -1275,7 +1395,7 @@ double afCollateralControlManager::increment_D_ac(double a_offset){
         }
     }
 
-    g_btn_action_str = "D_ac = " + cStr(_temp, 4);
+    m_btn_action_str = "D_ac = " + cStr(_temp, 4);
     return _temp;
 }
 

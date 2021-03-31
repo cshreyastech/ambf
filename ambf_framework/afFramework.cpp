@@ -1,8 +1,8 @@
 //==============================================================================
 /*
     Software License Agreement (BSD License)
-    Copyright (c) 2019, AMBF
-    (www.aimlab.wpi.edu)
+    Copyright (c) 2020, AMBF
+    (https://github.com/WPI-AIM/ambf)
 
     All rights reserved.
 
@@ -35,12 +35,9 @@
     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
 
-    \author    <http://www.aimlab.wpi.edu>
     \author    <amunawar@wpi.edu>
     \author    Adnan Munawar
-    \courtesy: Dejaime Antônio de Oliveira Neto at https://www.gamedev.net/profile/187867-dejaime/ for initial direction
-    \motivation: https://www.gamedev.net/articles/programming/engines-and-middleware/yaml-basics-and-parsing-with-yaml-cpp-r3508/
-    \version   $
+    \version   1.0$
 */
 //==============================================================================
 
@@ -81,8 +78,8 @@ int afCamera::s_cameraIdx = 0;
 int afCamera::s_windowIdx = 0;
 
 #ifdef AF_ENABLE_OPEN_CV_SUPPORT
-ros::NodeHandle* afCamera::s_imageTransportNode;
-image_transport::ImageTransport* afCamera::s_imageTransport;
+ros::NodeHandle* afCamera::s_rosNode = nullptr;
+image_transport::ImageTransport* afCamera::s_imageTransport = nullptr;
 bool afCamera::s_imageTransportInitialized = false;
 #endif
 //------------------------------------------------------------------------------
@@ -93,7 +90,7 @@ bool afCamera::s_imageTransportInitialized = false;
 
 template <>
 ///
-/// \brief .<btVector3>
+/// \brief toXYZ<btVector3>
 /// \param node
 /// \return
 ///
@@ -983,9 +980,8 @@ bool afConstraintActuator::loadActuator(YAML::Node *actuator_node, std::string n
     YAML::Node actuatorTau = actuatorNode["tau"];
 
 
-    std::string parent_name;
     if (actuatorParentName.IsDefined()){
-        parent_name = actuatorParentName.as<std::string>();
+        m_parentName = actuatorParentName.as<std::string>();
     }
     else{
         result = false;
@@ -1024,14 +1020,14 @@ bool afConstraintActuator::loadActuator(YAML::Node *actuator_node, std::string n
     }
 
     // First search in the local space.
-    m_parentBody = mB->getAFRigidBodyLocal(parent_name);
+    m_parentBody = mB->getAFRigidBodyLocal(m_parentName);
 
     if(!m_parentBody){
-        m_parentBody = m_afWorld->getAFRigidBody(parent_name + name_remapping);
+        m_parentBody = m_afWorld->getAFRigidBody(m_parentName + name_remapping);
     }
 
     if (m_parentBody == NULL){
-        std::cerr << "ERROR: ACTUATOR'S "<< parent_name + name_remapping << " NOT FOUND, IGNORING ACTUATOR\n";
+        std::cerr << "ERROR: ACTUATOR'S "<< m_parentName + name_remapping << " NOT FOUND, IGNORING ACTUATOR\n";
         return 0;
     }
     else{
@@ -1087,7 +1083,7 @@ void afConstraintActuator::actuate(afRigidBodyPtr a_rigidBody, cVector3d a_bodyO
         // Check if the new requested actuation is the same as what is already
         // actuated. In this case simply ignore the request
 
-        if (a_rigidBody == m_childRigidBody && (m_P_cINp - a_bodyOffset).length() < 0.001){
+        if (a_rigidBody == m_childBody){
             // We already have the same constraint. We can ignore the new request
 
             std::cerr << "INFO! ACTUATOR \"" << m_name << "\" IS ACTIVATED WITH THE SAME BODY AND OFFSET. THEREBY "
@@ -1103,11 +1099,13 @@ void afConstraintActuator::actuate(afRigidBodyPtr a_rigidBody, cVector3d a_bodyO
     if (a_rigidBody){
         btVector3 pvtA = toBTvec(getLocalPos());
         btVector3 pvtB = toBTvec(a_bodyOffset);
-        m_constraint = new btPoint2PointConstraint(*m_parentBody->m_bulletRigidBody, *a_rigidBody->m_bulletRigidBody, pvtA, pvtB);
+        m_childBody = a_rigidBody;
+        m_constraint = new btPoint2PointConstraint(*m_parentBody->m_bulletRigidBody, *m_childBody->m_bulletRigidBody, pvtA, pvtB);
         m_constraint->m_setting.m_impulseClamp = m_maxImpulse;
         m_constraint->m_setting.m_tau = m_tau;
         m_afWorld->m_bulletWorld->addConstraint(m_constraint);
         m_active = true;
+        return;
     }
     else{
         // We can warn that the requested body is in valid
@@ -1136,7 +1134,7 @@ void afConstraintActuator::deactuate(){
         delete m_constraint;
 
         m_constraint = 0;
-        m_childRigidBody = 0;
+        m_childBody = 0;
         m_childSotBody = 0;
         m_softBodyFaceIdx = -1;
     }
@@ -1940,15 +1938,6 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
             inertial_offset_rot.setEulerZYX(y, p, r);
         }
     }
-    else{
-        if (m_collisionGeometryType == GeometryType::mesh){
-            // Call the compute inertial offset before the build contact triangle method
-            // Sanity check, see if a mesh is defined or not
-            if (m_lowResMesh.m_meshes->size() > 0){
-                inertial_offset_pos = computeInertialOffset(m_lowResMesh.m_meshes[0][0]);
-            }
-        }
-    }
 
     inertial_offset_trans.setOrigin(inertial_offset_pos);
     inertial_offset_trans.setRotation(inertial_offset_rot);
@@ -1964,11 +1953,21 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
 
     // Begin loading the collision geometry
     if(m_collisionGeometryType == GeometryType::mesh){
-
+        m_lowResMesh.removeAllMesh();
         if( m_lowResMesh.loadFromFile(low_res_filepath.c_str()) ){
             if(m_scale != 1.0){
                 m_lowResMesh.scale(m_scale);
             }
+
+            if (bodyInertialOffsetPos.IsDefined() == false){
+                // Call the compute inertial offset before the build contact triangle method
+                // Sanity check, see if a mesh is defined or not
+                if (m_lowResMesh.m_meshes->size() > 0){
+                    inertial_offset_pos = computeInertialOffset(m_lowResMesh.m_meshes[0][0]);
+                    setInertialOffsetTransform(inertial_offset_trans);
+                }
+            }
+
             // Use the mesh data to build the collision shape
             buildContactTriangles(collision_margin, &m_lowResMesh);
         }
@@ -2000,8 +1999,12 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
         else{
             // If a shape offset is not defined, set the shape offset equal to the intertial offset transform
             // This is to take care of legacy ADF where a shape offset is not set.
-            shapeOffsetTrans = m_T_iINb;
+            shapeOffsetTrans = getInertialOffsetTransform();
         }
+
+        // A bug in Bullet where a compound plane shape doesn't collide with soft bodies.
+        // Thus for a plane, instead of using a compound, use the single collision shape.
+        bool is_plane = false;
 
         if (_shape_str.compare("Box") == 0 || _shape_str.compare("box") == 0 ||_shape_str.compare("BOX") == 0){
             double x = bodyCollisionGeometry["x"].as<double>();
@@ -2020,7 +2023,10 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
             double ny = bodyCollisionGeometry["normal"]["y"].as<double>();
             double nz = bodyCollisionGeometry["normal"]["z"].as<double>();
             offset *= m_scale;
-            singleCollisionShape = new btStaticPlaneShape(btVector3(nx, ny, nz), offset);
+            // A bug in Bullet where a compound plane shape doesn't collide with soft bodies.
+            // Thus for a plane, instead of using a compound, use the single collision shape.
+            is_plane = true;
+            m_bulletCollisionShape = new btStaticPlaneShape(btVector3(nx, ny, nz), offset);
         }
         else if (_shape_str.compare("Sphere") == 0 || _shape_str.compare("sphere") == 0 ||_shape_str.compare("SPHERE") == 0){
             double radius = bodyCollisionGeometry["radius"].as<double>();
@@ -2113,8 +2119,10 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
         // Now, a collision shape has to address both an inertial offset transform as well as
         // a shape offset.
 
-        compoundCollisionShape->addChildShape(m_T_iINb.inverse() * shapeOffsetTrans, singleCollisionShape);
-        m_bulletCollisionShape = compoundCollisionShape;
+        if (is_plane == false){
+            compoundCollisionShape->addChildShape(getInverseInertialOffsetTransform() * shapeOffsetTrans, singleCollisionShape);
+            m_bulletCollisionShape = compoundCollisionShape;
+        }
 
     }
     else if (m_collisionGeometryType == GeometryType::compound_shape){
@@ -2235,7 +2243,7 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
             // shape offset transfrom. This will change the legacy behavior but
             // luckily only a few ADFs (i.e. -l 16,17 etc) use the compound collision
             // shape. So they shall be updated.
-            compoundCollisionShape->addChildShape(m_T_iINb.inverse() * shapeOffsetTrans, singleCollisionShape);
+            compoundCollisionShape->addChildShape(getInverseInertialOffsetTransform() * shapeOffsetTrans, singleCollisionShape);
         }
         m_bulletCollisionShape = compoundCollisionShape;
     }
@@ -2260,7 +2268,8 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
             }
             D = bodyController["linear"]["D"].as<double>();
             m_controller.setLinearGains(P, I, D);
-            m_lin_gains_computed = true;
+            m_controller.m_positionOutputType = afControlType::force;
+            m_lin_gains_defined = true;
         }
 
         // Check if the angular controller is defined
@@ -2276,21 +2285,23 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
             }
             D = bodyController["angular"]["D"].as<double>();
             m_controller.setAngularGains(P, I, D);
-            m_ang_gains_computed = true;
+            m_controller.m_orientationOutputType = afControlType::force;
+            m_ang_gains_defined = true;
         }
     }
 
-    // If no controller gains are defined, compute based on lumped mass
-    // and intertia
-    if(!m_lin_gains_computed || !m_ang_gains_computed){
+    if(!m_lin_gains_defined){
         // Use preset values for the controller since we are going to be using its output for the
         // internal velocity controller
         m_controller.setLinearGains(10, 0, 0);
-        m_controller.setAngularGains(10, 0, 0);
-        m_usePIDController = false;
+        m_controller.m_positionOutputType = afControlType::velocity;
     }
-    else{
-        m_usePIDController = true;
+
+    if(!m_ang_gains_defined){
+        // Use preset values for the controller since we are going to be using its output for the
+        // internal velocity controller
+        m_controller.setAngularGains(10, 0, 0);
+        m_controller.m_orientationOutputType = afControlType::velocity;
     }
 
     if(m_mass == 0.0){
@@ -2313,20 +2324,31 @@ bool afRigidBody::loadRigidBody(YAML::Node* rb_node, std::string node_name, afMu
 
     buildDynamicModel();
 
+    cVector3d tempPos(0, 0, 0);
+    cMatrix3d tempRot(0, 0, 0);
     if(bodyPos.IsDefined()){
-        m_initialPos = toXYZ<cVector3d>(&bodyPos);
-        // Account for intertial offset transform
-        m_initialPos += toCvec(m_T_iINb.getOrigin());
-        setLocalPos(m_initialPos);
+        tempPos = toXYZ<cVector3d>(&bodyPos);
+        setLocalPos(tempPos);
     }
 
     if(bodyRot.IsDefined()){
         double r = bodyRot["r"].as<double>();
         double p = bodyRot["p"].as<double>();
         double y = bodyRot["y"].as<double>();
-        m_initialRot.setExtrinsicEulerRotationRad(r,p,y,cEulerOrder::C_EULER_ORDER_XYZ);
-        setLocalRot(m_initialRot);
+        tempRot.setExtrinsicEulerRotationRad(r,p,y,cEulerOrder::C_EULER_ORDER_XYZ);
+        setLocalRot(tempRot);
     }
+
+    // Inertial origin in world
+    cTransform T_iINw = getLocalTransform();
+
+    // Mesh Origin in World
+    cTransform T_mINw = T_iINw * afUtils::convertDataType<cTransform, btTransform>(getInertialOffsetTransform());
+
+    m_initialPos = T_mINw.getLocalPos();
+    m_initialRot = T_mINw.getLocalRot();
+    setLocalPos(T_mINw.getLocalPos());
+    setLocalRot(T_mINw.getLocalRot());
 
     if (bodyLinDamping.IsDefined())
         m_surfaceProps.m_linear_damping = bodyLinDamping.as<double>();
@@ -2416,8 +2438,22 @@ void afRigidBody::enableShaderProgram(){
             shaderProgram->use(go, ro);
             // Set the ID for shadow and normal maps.
             shaderProgram->setUniformi("shadowMap", C_TU_SHADOWMAP);
-            shaderProgram->setUniformi("normalMap", C_TU_NORMALMAP);
-            shaderProgram->setUniformi("vEnableNormalMapping", 1);
+            bool enable_normal_mapping = false;
+            for (int i = 0 ; i < m_meshes->size() ; i++){
+                cMesh* mesh = (*m_meshes)[i];
+                if (mesh->m_normalMap.get() != nullptr){
+                    if (mesh->m_normalMap->m_image.get() != nullptr){
+                        enable_normal_mapping = true;
+                    }
+                }
+            }
+            if (enable_normal_mapping){
+                shaderProgram->setUniformi("normalMap", C_TU_NORMALMAP);
+                shaderProgram->setUniformi("vEnableNormalMapping", 1);
+            }
+            else{
+                shaderProgram->setUniformi("vEnableNormalMapping", 0);
+            }
 
             std::cerr << "INFO! FOR BODY: "<< m_name << ", USING SHADER FILES: " <<
                          "\n \t VERTEX: " << m_vsFilePath.c_str() <<
@@ -2468,7 +2504,7 @@ btVector3 afRigidBody::computeInertialOffset(cMesh* mesh){
 /// \brief afBody::compute_gains
 ///
 void afRigidBody::computeControllerGains(){
-    if (m_lin_gains_computed && m_ang_gains_computed){
+    if (m_lin_gains_defined && m_ang_gains_defined){
         return;
     }
 
@@ -2480,19 +2516,19 @@ void afRigidBody::computeControllerGains(){
         lumped_mass += sjIt->m_childBody->getMass();
         lumped_intertia += sjIt->m_childBody->getInertia();
     }
-    if (!m_lin_gains_computed){
+    if (!m_lin_gains_defined){
         P_lin = lumped_mass * 20;
         D_lin = P_lin / 100;
         m_controller.setLinearGains(P_lin, 0, D_lin);
-        m_lin_gains_computed = true;
+        m_lin_gains_defined = true;
     }
     // TODO
     // Need a better way of estimating angular gains
-    if (!m_ang_gains_computed){
+    if (!m_ang_gains_defined){
         P_ang = lumped_mass * 10;
         D_ang = lumped_mass;
         m_controller.setAngularGains(P_ang, 0, D_ang);
-        m_ang_gains_computed = true;
+        m_ang_gains_defined = true;
     }
 }
 
@@ -2516,13 +2552,13 @@ void afRigidBody::updatePositionFromDynamics()
 {
     if (m_bulletRigidBody)
     {
-        // get transformation matrix of object
-        btTransform trans;
-        m_bulletRigidBody->getMotionState()->getWorldTransform(trans);
-        trans *= m_T_iINb.inverse();
+        // Inertial and Mesh Transform
+        btTransform T_iINw, T_mINw;
+        m_bulletRigidBody->getMotionState()->getWorldTransform(T_iINw);
+        T_mINw = T_iINw * getInverseInertialOffsetTransform();
 
-        btVector3 pos = trans.getOrigin();
-        btQuaternion q = trans.getRotation();
+        btVector3 pos = T_mINw.getOrigin();
+        btQuaternion q = T_mINw.getRotation();
 
         // set new position
         m_localPos.set(pos[0],pos[1],pos[2]);
@@ -2656,15 +2692,10 @@ void afRigidBody::afExecuteCommand(double dt){
         btVector3 force, torque;
         btVector3 lin_vel, ang_vel;
         ambf_msgs::RigidBodyCmd afCommand = m_afRigidBodyCommPtr->get_command();
-        if (afCommand.cartesian_cmd_type == ambf_msgs::RigidBodyCmd::TYPE_POSITION){
-            m_af_enable_position_controller = true;
-        }
-        else{
-            m_af_enable_position_controller = false;
-        }
 
         // IF THE COMMAND IS OF TYPE FORCE
         if (afCommand.cartesian_cmd_type == ambf_msgs::RigidBodyCmd::TYPE_FORCE){
+            m_activeControllerType = afControlType::force;
             if (m_bulletRigidBody){
                 force.setValue(afCommand.wrench.force.x,
                                afCommand.wrench.force.y,
@@ -2680,19 +2711,29 @@ void afRigidBody::afExecuteCommand(double dt){
         }
         // IF THE COMMAND IS OF TYPE POSITION
         else if (afCommand.cartesian_cmd_type == ambf_msgs::RigidBodyCmd::TYPE_POSITION){
+            m_activeControllerType = afControlType::position;
             // If the body is kinematic, we just want to control the position
             if (m_bulletRigidBody->isStaticOrKinematicObject()){
-                btTransform _Td;
-                _Td.setOrigin(btVector3(afCommand.pose.position.x,
+                btTransform Tcommand;
+                Tcommand.setOrigin(btVector3(afCommand.pose.position.x,
                                         afCommand.pose.position.y,
                                         afCommand.pose.position.z));
 
-                _Td.setRotation(btQuaternion(afCommand.pose.orientation.x,
+                Tcommand.setRotation(btQuaternion(afCommand.pose.orientation.x,
                                              afCommand.pose.orientation.y,
                                              afCommand.pose.orientation.z,
                                              afCommand.pose.orientation.w));
 
-                m_bulletRigidBody->getMotionState()->setWorldTransform(_Td);
+//                If the current pose is the same as before, ignore. Otherwise, update pose and collision AABB.
+                if ((m_bulletRigidBody->getWorldTransform().getOrigin() - Tcommand.getOrigin()).norm() > 0.00001 ||
+                        m_bulletRigidBody->getWorldTransform().getRotation().angleShortestPath(Tcommand.getRotation()) > 0.0001){
+                    // Compensate for the inertial offset
+                    Tcommand = Tcommand * getInertialOffsetTransform();
+//                    std::cerr << "Updating Static Object Pose \n";
+                    m_bulletRigidBody->getMotionState()->setWorldTransform(Tcommand);
+                    m_bulletRigidBody->setWorldTransform(Tcommand);
+                }
+
             }
             else{
                 btVector3 cur_pos, cmd_pos;
@@ -2725,7 +2766,7 @@ void afRigidBody::afExecuteCommand(double dt){
                 // Use the internal Cartesian Rotation Controller to Compute Output
                 rCommand = m_controller.computeOutput<btVector3>(cur_rot, cmd_rot, dt);
 
-                if (m_usePIDController){
+                if (m_controller.m_positionOutputType == afControlType::force){
                     // IF PID GAINS WERE DEFINED, USE THE PID CONTROLLER
                     // Use the internal Cartesian Position Controller
                     m_bulletRigidBody->applyCentralForce(pCommand);
@@ -2743,6 +2784,7 @@ void afRigidBody::afExecuteCommand(double dt){
         }
         // IF THE COMMAND IS OF TYPE VELOCITY
         else if (afCommand.cartesian_cmd_type == ambf_msgs::RigidBodyCmd::TYPE_VELOCITY){
+            m_activeControllerType = afControlType::velocity;
             if (m_bulletRigidBody){
                 lin_vel.setValue(afCommand.twist.linear.x,
                                  afCommand.twist.linear.y,
@@ -2768,7 +2810,7 @@ void afRigidBody::afExecuteCommand(double dt){
                     joint->commandEffort(jnt_cmd);
                 }
                 else if (afCommand.joint_cmds_types[jntIdx] == ambf_msgs::RigidBodyCmd::TYPE_POSITION){
-                    joint->commandPosition(jnt_cmd, dt);
+                    joint->commandPosition(jnt_cmd);
                 }
                 else if (afCommand.joint_cmds_types[jntIdx] == ambf_msgs::RigidBodyCmd::TYPE_VELOCITY){
                     joint->commandVelocity(jnt_cmd);
@@ -2907,31 +2949,31 @@ void afRigidBody::applyForceAtPointOnBody(const cVector3d &a_forceInWorld, const
 ///
 /// \brief afRigidBody::setAngle
 /// \param angle
-/// \param dt
 ///
-void afRigidBody::setAngle(double &angle, double dt){
+void afRigidBody::setAngle(double &angle){
     if (m_parentBodies.size() == 0){
         for (size_t jnt = 0 ; jnt < m_CJ_PairsActive.size() ; jnt++){
-            m_CJ_PairsActive[jnt].m_childJoint->commandPosition(angle, dt);
+            m_CJ_PairsActive[jnt].m_childJoint->commandPosition(angle);
         }
 
     }
 }
+
 
 ///
 /// \brief afRigidBody::setAngle
 /// \param angles
-/// \param dt
 ///
-void afRigidBody::setAngle(std::vector<double> &angles, double dt){
+void afRigidBody::setAngle(std::vector<double> &angles){
     if (m_parentBodies.size() == 0){
         double jntCmdSize = m_CJ_PairsActive.size() < angles.size() ? m_CJ_PairsActive.size() : angles.size();
         for (size_t jntIdx = 0 ; jntIdx < jntCmdSize ; jntIdx++){
-            m_CJ_PairsActive[jntIdx].m_childJoint->commandPosition(angles[jntIdx], dt);
+            m_CJ_PairsActive[jntIdx].m_childJoint->commandPosition(angles[jntIdx]);
         }
 
     }
 }
+
 
 ///
 /// \brief afRigidBody::checkCollisionGroupIdx
@@ -3552,7 +3594,7 @@ bool afJoint::loadJoint(YAML::Node* jnt_node, std::string node_name, afMultiBody
                 &&(!strcmp(m_afParentBody->m_name.c_str(), "World") == 0)
                 &&(!strcmp(m_afParentBody->m_name.c_str(), "WORLD") == 0)){
             //            std::cerr <<"INFO: JOINT: \"" << m_name <<
-            //                        "\'s\" PARENT BODY \"" << m_parent_name <<
+            //                        "\'s\" PARENT BODY \"" << m_parentName <<
             //                        "\" FOUND IN ANOTHER AMBF CONFIG," << std::endl;
         }
     }
@@ -3661,8 +3703,8 @@ bool afJoint::loadJoint(YAML::Node* jnt_node, std::string node_name, afMultiBody
         if( (jointController["D"]).IsDefined())
             m_controller.D = jointController["D"].as<double>();
 
-        // If the PID controller in defined, the gains will be used to command the joint
-        m_usePIDController = true;
+        // If the PID controller in defined, the gains will be used to command the joint force (effort)
+        m_controller.m_outputType == afControlType::force;
     }
     else{
         // If the controller gains are not defined, a velocity based control will be used.
@@ -3671,7 +3713,7 @@ bool afJoint::loadJoint(YAML::Node* jnt_node, std::string node_name, afMultiBody
         m_controller.P = 10;
         m_controller.I = 0;
         m_controller.D = 0;
-        m_usePIDController = false;
+        m_controller.m_outputType == afControlType::velocity;
     }
 
     // Bullet takes the x axis as the default for prismatic joints
@@ -3827,7 +3869,9 @@ bool afJoint::loadJoint(YAML::Node* jnt_node, std::string node_name, afMultiBody
 
         if(jointMaxMotorImpulse.IsDefined()){
             m_controller.max_impulse = jointMaxMotorImpulse.as<double>();
-            m_slider->setMaxLinMotorForce(m_controller.max_impulse);
+            // Ugly hack, divide by (default) fixed timestep to max linear motor force
+            // since m_slider does have a max impulse setting method.
+            m_slider->setMaxLinMotorForce(m_controller.max_impulse / 0.001);
         }
         else{
             // Default to 1000.0
@@ -3989,9 +4033,8 @@ void afJoint::applyDamping(const double &dt){
 ///
 /// \brief afJoint::commandPosition
 /// \param position_cmd
-/// \param dt
 ///
-void afJoint::commandPosition(double &position_cmd, double dt){
+void afJoint::commandPosition(double &position_cmd){
     // The torque commands disable the motor, so double check and re-enable the motor
     // if it was set to be enabled in the first place
     if (m_enableActuator){
@@ -3999,8 +4042,18 @@ void afJoint::commandPosition(double &position_cmd, double dt){
             // Sanity check
             btClamp(position_cmd, m_lowerLimit, m_upperLimit);
             double position_cur = getPosition();
+
+            if (m_jointType == JointType::revolute){
+                if ((m_upperLimit - m_lowerLimit) >= 2*PI ){
+                    // The joint is continous. Need some optimization
+                    position_cmd = getShortestAngle(position_cur, position_cmd);
+                    position_cur = 0.0;
+                }
+
+            }
+
             double command = m_controller.computeOutput(position_cur, position_cmd, m_afWorld->getSimulationTime());
-            if (m_usePIDController){
+            if (m_controller.m_outputType == afControlType::force){
                 commandEffort(command);
             }
             else{
@@ -4011,6 +4064,15 @@ void afJoint::commandPosition(double &position_cmd, double dt){
     else{
         std::cerr << "WARNING, MOTOR NOT ENABLED FOR JOINT: " << m_name << std::endl;
     }
+}
+
+double afJoint::getShortestAngle(double current, double target)
+{
+    if (current < 0.0){
+        current = 2 * PI + current;
+    }
+    double delta_angle = fmod( (target - current + 3 * PI), 2*PI) - PI;
+    return delta_angle;
 }
 
 ///
@@ -4207,9 +4269,8 @@ bool afRayTracerSensor::loadSensor(YAML::Node *sensor_node, std::string node_nam
     YAML::Node sensorMesh = sensorNode["mesh"];
     YAML::Node sensorParametric = sensorNode["parametric"];
 
-    std::string parent_name;
     if (sensorParentName.IsDefined()){
-        parent_name = sensorParentName.as<std::string>();
+        m_parentName = sensorParentName.as<std::string>();
     }
     else{
         result = false;
@@ -4264,14 +4325,14 @@ bool afRayTracerSensor::loadSensor(YAML::Node *sensor_node, std::string node_nam
     }
 
     // First search in the local space.
-    m_parentBody = mB->getAFRigidBodyLocal(parent_name);
+    m_parentBody = mB->getAFRigidBodyLocal(m_parentName);
 
     if(!m_parentBody){
-        m_parentBody = m_afWorld->getAFRigidBody(parent_name + name_remapping);
+        m_parentBody = m_afWorld->getAFRigidBody(m_parentName + name_remapping);
     }
 
-    if (m_parentBody == NULL){
-        std::cerr << "ERROR: SENSOR'S "<< parent_name + name_remapping << " NOT FOUND, IGNORING SENSOR\n";
+    if (m_parentBody == nullptr){
+        std::cerr << "ERROR: SENSOR'S "<< m_parentName + name_remapping << " NOT FOUND, IGNORING SENSOR\n";
         return 0;
     }
     else{
@@ -4299,7 +4360,7 @@ bool afRayTracerSensor::loadSensor(YAML::Node *sensor_node, std::string node_nam
     else if (sensorMesh.IsDefined()){
         std::string mesh_name = sensorMesh.as<std::string>();
         mesh_name = mB->getHighResMeshesPath() + mesh_name;
-        cMultiMesh* multiMesh = new cBulletMultiMesh(m_afWorld);
+        cMultiMesh* multiMesh = new cMultiMesh();
         if (multiMesh->loadFromFile(mesh_name)){
             cMesh* sourceMesh = (*multiMesh->m_meshes)[0];
             if (sourceMesh){
@@ -4331,6 +4392,7 @@ bool afRayTracerSensor::loadSensor(YAML::Node *sensor_node, std::string node_nam
                     m_sensedResults[i].m_rayToLocal = m_sensedResults[i].m_rayFromLocal + m_sensedResults[i].m_direction * m_sensedResults[i].m_range;
                 }
             }
+            delete multiMesh;
             result = true;
         }
         else{
@@ -4882,7 +4944,13 @@ void afResistanceSensor::updatePositionFromDynamics(){
 /// \brief afJoint::~afJoint
 ///
 afJoint::~afJoint(){
-    delete m_btConstraint;
+    if (m_btConstraint != nullptr){
+         delete m_btConstraint;
+    }
+
+    if (m_feedback != nullptr){
+        delete m_feedback;
+    }
 }
 
 
@@ -5005,6 +5073,26 @@ afWorld::afWorld(std::string a_global_namespace){
     addChild(m_pointCloudHandlerPtr);
 }
 
+afWorld::~afWorld()
+{
+    if (m_pickedConstraint != nullptr){
+        delete m_pickedConstraint;
+    }
+
+    for (afSensorMap::iterator sIt = m_afSensorMap.begin() ; sIt != m_afSensorMap.end() ; ++sIt){
+        delete sIt->second;
+    }
+
+    for (afActuatorMap::iterator aIt = m_afActuatorMap.begin() ; aIt != m_afActuatorMap.end() ; ++aIt){
+        delete aIt->second;
+    }
+
+    for (afJointMap::iterator jIt = m_afJointMap.begin() ; jIt != m_afJointMap.end() ; ++jIt){
+        delete jIt->second;
+    }
+
+}
+
 
 ///
 /// \brief afWorld::get_enclosure_length
@@ -5101,6 +5189,7 @@ void afWorld::resetDynamicBodies(bool reset_time){
         rB->setAngularVelocity(zero);
         cTransform c_T(afRB->getInitialPosition(), afRB->getInitialRotation());
         btTransform bt_T = afUtils::convertDataType<btTransform, cTransform>(c_T);
+        rB->getMotionState()->setWorldTransform(bt_T);
         rB->setWorldTransform(bt_T);
     }
 
@@ -5492,12 +5581,16 @@ bool afWorld::loadWorld(std::string a_world_config, bool showGUI){
         return 0;
     }
 
+    m_world_config_path = boost::filesystem::path(a_world_config).parent_path();
+    printf("INFO! WORLD CONFIG PATH: %s \n", m_world_config_path.c_str());
+
     m_name = "World";
 
     YAML::Node worldEnclosureData = worldNode["enclosure"];
     YAML::Node worldLightsData = worldNode["lights"];
     YAML::Node worldCamerasData = worldNode["cameras"];
     YAML::Node worldEnvironment = worldNode["environment"];
+    YAML::Node worldSkyBox = worldNode["skybox"];
     YAML::Node worldNamespace = worldNode["namespace"];
     YAML::Node worldMaxIterations = worldNode["max iterations"];
     YAML::Node worldGravity = worldNode["gravity"];
@@ -5554,13 +5647,61 @@ bool afWorld::loadWorld(std::string a_world_config, bool showGUI){
         std::string world_adf = worldEnvironment.as<std::string>();
         boost::filesystem::path p(world_adf);
         if (p.is_relative()){
-            p = boost::filesystem::path(a_world_config).parent_path() / p;
+            p = m_world_config_path / p;
         }
         env_defined = loadADF(p.string(), false);
     }
 
     if (!env_defined){
         createDefaultWorld();
+    }
+
+    if (worldSkyBox.IsDefined()){
+        boost::filesystem::path skybox_path = worldSkyBox["path"].as<std::string>();
+
+        if (skybox_path.is_relative()){
+            skybox_path = m_world_config_path / skybox_path;
+        }
+
+        if (worldSkyBox["right"].IsDefined() &&
+                worldSkyBox["left"].IsDefined() &&
+                worldSkyBox["top"].IsDefined() &&
+                worldSkyBox["bottom"].IsDefined() &&
+                worldSkyBox["front"].IsDefined() &&
+                worldSkyBox["back"].IsDefined()
+                )
+        {
+            m_skyBoxDefined = true;
+        }
+        else{
+            m_skyBoxDefined = false;
+        }
+
+        if (m_skyBoxDefined){
+
+            m_skyBoxRight = skybox_path / worldSkyBox["right"].as<std::string>();
+            m_skyBoxLeft = skybox_path / worldSkyBox["left"].as<std::string>();
+            m_skyBoxTop = skybox_path / worldSkyBox["top"].as<std::string>();
+            m_skyBoxBottom = skybox_path / worldSkyBox["bottom"].as<std::string>();
+            m_skyBoxFront = skybox_path / worldSkyBox["front"].as<std::string>();
+            m_skyBoxBack = skybox_path / worldSkyBox["back"].as<std::string>();
+
+            if (worldSkyBox["shaders"].IsDefined()){
+                boost::filesystem::path shader_path = worldSkyBox["shaders"]["path"].as<std::string>();
+
+                if (shader_path.is_relative()){
+                    shader_path = m_world_config_path / shader_path;
+                }
+
+                m_skyBox_vsFilePath = shader_path / worldSkyBox["shaders"]["vertex"].as<std::string>();
+                m_skyBox_fsFilePath = shader_path / worldSkyBox["shaders"]["fragment"].as<std::string>();
+
+                m_skyBox_shaderProgramDefined = true;
+            }
+            else{
+                m_skyBox_shaderProgramDefined = false;
+            }
+        }
     }
 
     if (worldLightsData.IsDefined()){
@@ -5629,7 +5770,7 @@ bool afWorld::loadWorld(std::string a_world_config, bool showGUI){
             boost::filesystem::path shader_path = worldShaders["path"].as<std::string>();
 
             if (shader_path.is_relative()){
-                shader_path = getBasePath() / shader_path;
+                shader_path = m_world_config_path / shader_path;
             }
 
             m_vsFilePath = shader_path / worldShaders["vertex"].as<std::string>();
@@ -5645,50 +5786,170 @@ bool afWorld::loadWorld(std::string a_world_config, bool showGUI){
 
 
 ///
+/// \brief afWorld::render
+/// \param options
+///
+void afWorld::render(afRenderOptions &options)
+{
+    // Update shadow maps once
+    updateShadowMaps(false, options.m_mirroredDisplay);
+
+    afCameraMap::iterator camIt;
+    for (camIt = m_afCameraMap.begin(); camIt != m_afCameraMap.end(); ++ camIt){
+        afCameraPtr cameraPtr = (camIt->second);
+        cameraPtr->render(options);
+
+    }
+
+}
+
+
+///
+/// \brief afWorld::createSkyBox
+///
+void afWorld::loadSkyBox(){
+    if (m_skyBoxDefined && m_skyBox_shaderProgramDefined){
+
+        m_skyBoxMesh = new cMesh();
+        float cube[] = {
+            // positions
+            -1.0f,  1.0f, -1.0f,
+            -1.0f, -1.0f, -1.0f,
+            1.0f, -1.0f, -1.0f,
+            1.0f, -1.0f, -1.0f,
+            1.0f,  1.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,
+
+            -1.0f, -1.0f,  1.0f,
+            -1.0f, -1.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,
+            -1.0f,  1.0f, -1.0f,
+            -1.0f,  1.0f,  1.0f,
+            -1.0f, -1.0f,  1.0f,
+
+            1.0f, -1.0f, -1.0f,
+            1.0f, -1.0f,  1.0f,
+            1.0f,  1.0f,  1.0f,
+            1.0f,  1.0f,  1.0f,
+            1.0f,  1.0f, -1.0f,
+            1.0f, -1.0f, -1.0f,
+
+            -1.0f, -1.0f,  1.0f,
+            -1.0f,  1.0f,  1.0f,
+            1.0f,  1.0f,  1.0f,
+            1.0f,  1.0f,  1.0f,
+            1.0f, -1.0f,  1.0f,
+            -1.0f, -1.0f,  1.0f,
+
+            -1.0f,  1.0f, -1.0f,
+            1.0f,  1.0f, -1.0f,
+            1.0f,  1.0f,  1.0f,
+            1.0f,  1.0f,  1.0f,
+            -1.0f,  1.0f,  1.0f,
+            -1.0f,  1.0f, -1.0f,
+
+            -1.0f, -1.0f, -1.0f,
+            -1.0f, -1.0f,  1.0f,
+            1.0f, -1.0f, -1.0f,
+            1.0f, -1.0f, -1.0f,
+            -1.0f, -1.0f,  1.0f,
+            1.0f, -1.0f,  1.0f
+        };
+
+        for (int vI = 0 ; vI < 12 ; vI++){
+            int off = vI * 9;
+            m_skyBoxMesh->newTriangle(
+                        cVector3d(cube[off + 0], cube[off + 1], cube[off + 2]),
+                        cVector3d(cube[off + 3], cube[off + 4], cube[off + 5]),
+                        cVector3d(cube[off + 6], cube[off + 7], cube[off + 8]));
+        }
+
+        m_skyBoxMesh->computeAllNormals();
+
+        cTextureCubeMapPtr newTexture = cTextureCubeMap::create();
+
+        for (int iI = 0 ; iI < 6 ; iI++){
+            newTexture->m_images[iI] = cImage::create();
+        }
+
+        bool res[6];
+        res[0] = newTexture->m_images[0]->loadFromFile(m_skyBoxRight.c_str());
+        res[1] = newTexture->m_images[1]->loadFromFile(m_skyBoxLeft.c_str());
+        res[2] = newTexture->m_images[3]->loadFromFile(m_skyBoxTop.c_str());
+        res[3] = newTexture->m_images[2]->loadFromFile(m_skyBoxBottom.c_str());
+        res[4] = newTexture->m_images[4]->loadFromFile(m_skyBoxFront.c_str());
+        res[5] = newTexture->m_images[5]->loadFromFile(m_skyBoxBack.c_str());
+
+//        res[0] = newTexture->m_images[0]->loadFromFile(m_skyBoxFront.c_str());
+//        res[1] = newTexture->m_images[1]->loadFromFile(m_skyBoxBack.c_str());
+//        res[2] = newTexture->m_images[2]->loadFromFile(m_skyBoxRight.c_str());
+//        res[3] = newTexture->m_images[3]->loadFromFile(m_skyBoxLeft.c_str());
+//        res[4] = newTexture->m_images[4]->loadFromFile(m_skyBoxTop.c_str());
+//        res[5] = newTexture->m_images[5]->loadFromFile(m_skyBoxBottom.c_str());
+
+        if (res[0] && res[1] && res[2] && res[3] && res[4] && res[5] && res[5]){
+            // All images were loaded succesfully
+
+            m_skyBoxMesh->setTexture(newTexture);
+            m_skyBoxMesh->setUseTexture(true);
+
+            addChild(m_skyBoxMesh);
+
+            if (m_skyBox_shaderProgramDefined){
+                std::ifstream vsFile;
+                std::ifstream fsFile;
+                vsFile.open(m_skyBox_vsFilePath.c_str());
+                fsFile.open(m_skyBox_fsFilePath.c_str());
+                // create a string stream
+                std::stringstream vsBuffer, fsBuffer;
+                // dump the contents of the file into it
+                vsBuffer << vsFile.rdbuf();
+                fsBuffer << fsFile.rdbuf();
+                // close the files
+                vsFile.close();
+                fsFile.close();
+
+                cShaderProgramPtr shaderProgram = cShaderProgram::create(vsBuffer.str(), fsBuffer.str());
+                if (shaderProgram->linkProgram()){
+                    // Just empty Pts to let us use the shader
+                    cGenericObject* go;
+                    cRenderOptions ro;
+                    shaderProgram->use(go, ro);
+
+                    std::cerr << "USING SKYBOX SHADER FILES: " <<
+                                 "\n \t VERTEX: " << m_skyBox_vsFilePath.c_str() <<
+                                 "\n \t FRAGMENT: " << m_skyBox_fsFilePath.c_str() << std::endl;
+                    m_skyBoxMesh->setShaderProgram(shaderProgram);
+
+                }
+                else{
+                    std::cerr << "ERROR! FOR SKYBOX FAILED TO LOAD SHADER FILES: " <<
+                                 "\n \t VERTEX: " << m_skyBox_vsFilePath.c_str() <<
+                                 "\n \t FRAGMENT: " << m_skyBox_fsFilePath.c_str() << std::endl;
+
+                    m_skyBox_shaderProgramDefined = false;
+                    removeChild(m_skyBoxMesh);
+                    delete m_skyBoxMesh;
+                }
+            }
+        }
+        else{
+            std::cerr << "CAN'T LOAD SKY BOX IMAGES, IGNORING\n";
+        }
+    }
+}
+
+
+///
 /// \brief afWorld::enableShaderProgram
 ///
 void afWorld::enableShaderProgram(){
     if (m_shaderProgramDefined){
-        std::ifstream vsFile;
-        std::ifstream fsFile;
-        vsFile.open(m_vsFilePath.c_str());
-        fsFile.open(m_fsFilePath.c_str());
-        // create a string stream
-        std::stringstream vsBuffer, fsBuffer;
-        // dump the contents of the file into it
-        vsBuffer << vsFile.rdbuf();
-        fsBuffer << fsFile.rdbuf();
-        // close the files
-        vsFile.close();
-        fsFile.close();
-
-        cShaderProgramPtr shaderProgram = cShaderProgram::create(vsBuffer.str(), fsBuffer.str());
-        if (shaderProgram->linkProgram()){
-            // Just empty Pts to let us use the shader
-            cGenericObject* go;
-            cRenderOptions ro;
-            shaderProgram->use(go, ro);
-            // Set the ID for shadow and normal maps.
-            shaderProgram->setUniformi("shadowMap", C_TU_SHADOWMAP);
-            shaderProgram->setUniformi("normalMap", C_TU_NORMALMAP);
-            shaderProgram->setUniformi("vEnableNormalMapping", 1);
-
-            std::cerr << "USING WORLD SHADER FILES: " <<
-                         "\n \t VERTEX: " << m_vsFilePath.c_str() <<
-                         "\n \t FRAGMENT: " << m_fsFilePath.c_str() << std::endl;
-
-            afRigidBodyVec rbVec = getAFRigidBodies();
-            for (int i = 0 ; i < rbVec.size() ; i++){
-                rbVec[i]->setShaderProgram(shaderProgram);
-            }
-
-        }
-        else{
-            std::cerr << "ERROR! FOR WORLD FAILED TO LOAD SHADER FILES: " <<
-                         "\n \t VERTEX: " << m_vsFilePath.c_str() <<
-                         "\n \t FRAGMENT: " << m_fsFilePath.c_str() << std::endl;
-
-            m_shaderProgramDefined = false;
+        afRigidBodyVec rbVec = getAFRigidBodies();
+        for (int i = 0 ; i < rbVec.size() ; i++){
+            rbVec[i]->m_vsFilePath = m_vsFilePath;
+            rbVec[i]->m_fsFilePath = m_fsFilePath;
+            rbVec[i]->m_shaderProgramDefined = true;
         }
     }
 }
@@ -5720,6 +5981,7 @@ bool afWorld::loadADF(int i, bool enable_comm){
 
     std::string adf_filepath = getMultiBodyConfig(i);
     loadADF(adf_filepath, enable_comm);
+    return true;
 }
 
 
@@ -5963,18 +6225,19 @@ bool afWorld::pickBody(const cVector3d &rayFromWorld, const cVector3d &rayToWorl
         if (colObject->getInternalType() == btCollisionObject::CollisionObjectTypes::CO_RIGID_BODY){
             btRigidBody* body = (btRigidBody*)btRigidBody::upcast(colObject);
             if (body){
-                m_lastPickedBody = getAFRigidBody(body, true);
-                if (m_lastPickedBody){
-                    std::cerr << "Picked AF Rigid Body: " << m_lastPickedBody->m_name << std::endl;
+                m_pickedAFRigidBody = getAFRigidBody(body, true);
+                if (m_pickedAFRigidBody){
+                    std::cerr << "User picked AF rigid body: " << m_pickedAFRigidBody->m_name << std::endl;
+                    m_pickedBulletRigidBody = body;
+                    m_pickedAFRigidBodyColor = m_pickedAFRigidBody->m_material->copy();
+                    m_pickedAFRigidBody->setMaterial(m_pickColor);
+                    m_savedState = m_pickedBulletRigidBody->getActivationState();
+                    m_pickedBulletRigidBody->setActivationState(DISABLE_DEACTIVATION);
                 }
+
                 //other exclusions?
                 if (!(body->isStaticObject() || body->isKinematicObject()))
                 {
-                    m_pickedBody = body;
-                    m_pickedBodyColor = m_lastPickedBody->m_material->copy();
-                    m_lastPickedBody->setMaterial(m_pickColor);
-                    m_savedState = m_pickedBody->getActivationState();
-                    m_pickedBody->setActivationState(DISABLE_DEACTIVATION);
                     //printf("pickPos=%f,%f,%f\n",pickPos.getX(),pickPos.getY(),pickPos.getZ());
                     btVector3 localPivot = body->getCenterOfMassTransform().inverse() * toBTvec(pickPos);
                     btPoint2PointConstraint* p2p = new btPoint2PointConstraint(*body, localPivot);
@@ -5984,6 +6247,9 @@ bool afWorld::pickBody(const cVector3d &rayFromWorld, const cVector3d &rayToWorl
                     p2p->m_setting.m_impulseClamp = mousePickClamping;
                     //very weak constraint for picking
                     p2p->m_setting.m_tau = 1/body->getInvMass();
+                }
+                else{
+                    m_pickedOffset = toCvec(body->getCenterOfMassPosition()) - pickPos;
                 }
             }
         }
@@ -6034,23 +6300,33 @@ bool afWorld::pickBody(const cVector3d &rayFromWorld, const cVector3d &rayToWorl
 /// \return
 ///
 bool afWorld::movePickedBody(const cVector3d &rayFromWorld, const cVector3d &rayToWorld){
-    if (m_pickedBody && m_pickedConstraint)
+    if (m_pickedBulletRigidBody)
     {
-        btPoint2PointConstraint* pickCon = static_cast<btPoint2PointConstraint*>(m_pickedConstraint);
-        if (pickCon)
-        {
-            //keep it at the same picking distance
+        //keep it at the same picking distance
+        cVector3d newLocation;
 
-            cVector3d newPivotB;
+        cVector3d dir = rayToWorld - rayFromWorld;
+        dir.normalize();
+        dir *= m_oldPickingDist;
 
-            cVector3d dir = rayToWorld - rayFromWorld;
-            dir.normalize();
-            dir *= m_oldPickingDist;
+        newLocation = rayFromWorld + dir;
+        // Set the position of grab sphere
+        m_pickSphere->setLocalPos(newLocation);
 
-            newPivotB = rayFromWorld + dir;
-            // Set the position of grab sphere
-            m_pickSphere->setLocalPos(newPivotB);
-            pickCon->setPivotB(toBTvec(newPivotB));
+        if (m_pickedConstraint){
+            btPoint2PointConstraint* pickCon = static_cast<btPoint2PointConstraint*>(m_pickedConstraint);
+            if (pickCon)
+            {
+                pickCon->setPivotB(toBTvec(newLocation));
+                return true;
+            }
+        }
+        else{
+            // In this case the rigidBody is a static or kinematic body
+            btTransform curTrans = m_pickedBulletRigidBody->getWorldTransform();
+            curTrans.setOrigin(toBTvec(newLocation + m_pickedOffset));
+            m_pickedBulletRigidBody->getMotionState()->setWorldTransform(curTrans);
+            m_pickedBulletRigidBody->setWorldTransform(curTrans);
             return true;
         }
     }
@@ -6082,16 +6358,20 @@ void afWorld::removePickingConstraint(){
     btDynamicsWorld* m_dynamicsWorld = m_bulletWorld;
     if (m_pickedConstraint)
     {
-        m_pickSphere->setShowEnabled(false);
-        m_pickedBody->forceActivationState(m_savedState);
-        m_pickedBody->activate();
+        m_pickedBulletRigidBody->forceActivationState(m_savedState);
+        m_pickedBulletRigidBody->activate();
         m_dynamicsWorld->removeConstraint(m_pickedConstraint);
         delete m_pickedConstraint;
-        m_pickedConstraint = 0;
-        m_pickedBody = 0;
-        if (m_lastPickedBody){
-            m_lastPickedBody->setMaterial(m_pickedBodyColor);
-        }
+        m_pickedConstraint = nullptr;
+    }
+
+    if (m_pickedBulletRigidBody){
+        m_pickSphere->setShowEnabled(false);
+        m_pickedBulletRigidBody = 0;
+    }
+
+    if (m_pickedAFRigidBody){
+        m_pickedAFRigidBody->setMaterial(m_pickedAFRigidBodyColor);
     }
 
     if (m_pickedSoftBody){
@@ -6165,6 +6445,29 @@ bool afCamera::setView(const cVector3d &a_localPosition, const cVector3d &a_loca
     return true;
 }
 
+
+///
+/// \brief afCamera::setImagePublishInterval
+/// \param a_interval
+///
+void afCamera::setImagePublishInterval(uint a_interval){
+    m_imagePublishInterval = cMax(a_interval, (uint)1 );
+}
+
+
+///
+/// \brief afCamera::setDepthPublishInterval
+/// \param a_interval
+///
+void afCamera::setDepthPublishInterval(uint a_interval){
+    m_depthPublishInterval = cMax(a_interval, (uint)1 );
+}
+
+
+///
+/// \brief afCamera::getGlobalPos
+/// \return
+///
 cVector3d afCamera::getGlobalPos(){
     if (getParent()){
         return getParent()->getLocalTransform() * getLocalPos();
@@ -6322,11 +6625,13 @@ bool afCamera::loadCamera(YAML::Node* a_camera_node, std::string a_camera_name, 
     YAML::Node cameraParent = cameraNode["parent"];
     YAML::Node cameraMonitor = cameraNode["monitor"];
     YAML::Node cameraPublishImage = cameraNode["publish image"];
+    YAML::Node cameraPublishImageInterval = cameraNode["publish image interval"];
+    YAML::Node cameraPublishDepth = cameraNode["publish depth"];
+    YAML::Node cameraPublishDepthInterval = cameraNode["publish depth interval"];
     YAML::Node cameraMultiPass = cameraNode["multipass"];
 
     bool _is_valid = true;
     double _clipping_plane_limits[2], _field_view_angle;
-    bool _enable_ortho_view = false;
     double _stereoEyeSeperation, _stereoFocalLength, _orthoViewWidth;
     std::string _stereoModeStr;
     int _monitorToLoad = -1;
@@ -6386,11 +6691,11 @@ bool afCamera::loadCamera(YAML::Node* a_camera_node, std::string a_camera_name, 
         _field_view_angle = 0.8;
     }
     if (cameraOrthoWidthData.IsDefined()){
-        _enable_ortho_view = true;
+         m_orthographic = true;
         _orthoViewWidth = cameraOrthoWidthData.as<double>();
     }
     else{
-        _enable_ortho_view = false;
+         m_orthographic = false;
     }
     if (cameraStereo.IsDefined()){
         _stereoModeStr = cameraStereo["mode"].as<std::string>();
@@ -6417,6 +6722,18 @@ bool afCamera::loadCamera(YAML::Node* a_camera_node, std::string a_camera_name, 
 
     if (cameraPublishImage.IsDefined()){
         m_publishImage = cameraPublishImage.as<bool>();
+    }
+
+    if (cameraPublishImageInterval.IsDefined()){
+        m_imagePublishInterval = cMax(cameraPublishImageInterval.as<uint>(), (uint)1);
+    }
+
+    if (cameraPublishDepth.IsDefined()){
+        m_publishDepth = cameraPublishDepth.as<bool>();
+    }
+
+    if (cameraPublishDepthInterval.IsDefined()){
+        m_depthPublishInterval = cMax(cameraPublishDepthInterval.as<uint>(), (uint)1);
     }
 
     if (cameraMultiPass.IsDefined()){
@@ -6457,11 +6774,11 @@ bool afCamera::loadCamera(YAML::Node* a_camera_node, std::string a_camera_name, 
         // set vertical mirrored display mode
         m_camera->setMirrorVertical(false);
 
-        m_camera->setFieldViewAngleRad(_field_view_angle);
-
-        // Check if ortho view is enabled
-        if (_enable_ortho_view){
+        if (m_orthographic){
             m_camera->setOrthographicView(_orthoViewWidth);
+        }
+        else{
+            m_camera->setFieldViewAngleRad(_field_view_angle);
         }
 
         m_camera->setUseMultipassTransparency(_useMultiPassTransparency);
@@ -6502,6 +6819,35 @@ bool afCamera::loadCamera(YAML::Node* a_camera_node, std::string a_camera_name, 
             s_mainWindow = m_window;
         }
 
+        if (!m_window)
+        {
+            std::cerr << "ERROR! FAILED TO CREATE OPENGL WINDOW" << std::endl;
+            cSleepMs(1000);
+            glfwTerminate();
+            return 1;
+        }
+
+        // get width and height of window
+        glfwGetWindowSize(m_window, &m_width, &m_height);
+
+        // set position of window
+        glfwSetWindowPos(m_window, m_win_x, m_win_y);
+
+        // set the current context
+        glfwMakeContextCurrent(m_window);
+
+        glfwSwapInterval(0);
+
+        // initialize GLEW library
+#ifdef GLEW_VERSION
+        if (glewInit() != GLEW_OK)
+        {
+            std::cerr << "ERROR! FAILED TO INITIALIZE GLEW LIBRARY" << std::endl;
+            glfwTerminate();
+            return 1;
+        }
+#endif
+
         // create a font
         cFontPtr font = NEW_CFONTCALIBRI20();
 
@@ -6533,27 +6879,298 @@ bool afCamera::loadCamera(YAML::Node* a_camera_node, std::string a_camera_name, 
         buildDynamicModel();
 
 
-#ifdef AF_ENABLE_OPEN_CV_SUPPORT
-        if (m_publishImage){
+        if (m_publishImage || m_publishDepth){
             m_frameBuffer = new cFrameBuffer();
-            m_imageFromBuffer = cImage::create();
+            m_bufferColorImage = cImage::create();
+            m_bufferDepthImage = cImage::create();
+            m_frameBuffer->setup(m_camera, m_width, m_height, true, true);
 
+#ifdef AF_ENABLE_OPEN_CV_SUPPORT
             if (s_imageTransportInitialized == false){
                 s_imageTransportInitialized = true;
                 int argc = 0;
                 char **argv = 0;
                 ros::init(argc, argv, "ambf_image_transport_node");
-                s_imageTransportNode = new ros::NodeHandle();
-                s_imageTransport = new image_transport::ImageTransport(*s_imageTransportNode);
+                s_rosNode = new ros::NodeHandle();
+                s_imageTransport = new image_transport::ImageTransport(*s_rosNode);
             }
-
-            m_frameBuffer->setup(m_camera, m_width, m_height, true, true);
-            m_imagePublisher = s_imageTransport->advertise("/ambf/image_data/" + m_name, 1);
-        }
+            m_imagePublisher = s_imageTransport->advertise(m_namespace + m_name + "/ImageData", 1);
 #endif
+
+            if (m_publishDepth){
+                // Set up the world
+                m_dephtWorld = new cWorld();
+
+                // Set up the frame buffer
+                m_depthBuffer = new cFrameBuffer();
+                m_depthBuffer->setup(m_camera, m_width, m_height, true, false, GL_RGBA16);
+
+                m_depthPC.setup(m_width, m_height, 3);
+
+                // Set up the quad
+                m_depthMesh = new cMesh();
+                float quad[] = {
+                    // positions
+                    -1.0f,  1.0f, 0.0f,
+                    -1.0f, -1.0f, 0.0f,
+                    1.0f, -1.0f, 0.0f,
+                    -1.0f, 1.0f, 0.0f,
+                    1.0f,  -1.0f, 0.0f,
+                    1.0f,  1.0f, 0.0f,
+                };
+                for (int vI = 0 ; vI < 2 ; vI++){
+                    int off = vI * 9;
+                    m_depthMesh->newTriangle(
+                                cVector3d(quad[off + 0], quad[off + 1], quad[off + 2]),
+                                cVector3d(quad[off + 3], quad[off + 4], quad[off + 5]),
+                                cVector3d(quad[off + 6], quad[off + 7], quad[off + 8]));
+                }
+                m_depthMesh->m_vertices->setTexCoord(0, 0.0, 1.0, 1.0);
+                m_depthMesh->m_vertices->setTexCoord(1, 0.0, 0.0, 1.0);
+                m_depthMesh->m_vertices->setTexCoord(2, 1.0, 0.0, 1.0);
+                m_depthMesh->m_vertices->setTexCoord(3, 0.0, 1.0, 1.0);
+                m_depthMesh->m_vertices->setTexCoord(4, 1.0, 0.0, 1.0);
+                m_depthMesh->m_vertices->setTexCoord(5, 1.0, 1.0, 1.0);
+
+                m_depthMesh->computeAllNormals();
+                m_depthMesh->m_texture = cTexture2d::create();
+                m_depthMesh->m_texture->m_image->allocate(m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE);
+                m_depthMesh->setUseTexture(true);
+
+                m_dephtWorld->addChild(m_depthMesh);
+                m_dephtWorld->addChild(m_camera);
+
+                m_depthBufferColorImage = cImage::create();
+                m_depthBufferColorImage->allocate(m_width, m_height, GL_RGBA, GL_UNSIGNED_INT);
+
+//                // DEBUGGING USING EXTERNALLY DEFINED SHADERS
+//                std::ifstream vsFile;
+//                std::ifstream fsFile;
+//                vsFile.open("/home/adnan/ambf/ambf_shaders/depth/shader.vs");
+//                fsFile.open("/home/adnan/ambf/ambf_shaders/depth/shader.fs");
+//                // create a string stream
+//                std::stringstream vsBuffer, fsBuffer;
+//                // dump the contents of the file into it
+//                vsBuffer << vsFile.rdbuf();
+//                fsBuffer << fsFile.rdbuf();
+//                // close the files
+//                vsFile.close();
+//                fsFile.close();
+//                cShaderProgramPtr shaderPgm = cShaderProgram::create(vsBuffer.str(), fsBuffer.str());
+
+                cShaderProgramPtr shaderPgm = cShaderProgram::create(AF_DEPTH_COMPUTE_VTX, AF_DEPTH_COMPUTE_FRAG);
+                if (shaderPgm->linkProgram()){
+                    cGenericObject* go;
+                    cRenderOptions ro;
+                    shaderPgm->use(go, ro);
+                    m_depthMesh->setShaderProgram(shaderPgm);
+                    shaderPgm->disable();
+                }
+                else{
+                    std::cerr << "ERROR! FOR DEPTH_TO_PC2 FAILED TO LOAD SHADER FILES: " << std::endl;
+                }
+
+#ifdef C_ENABLE_AMBF_COMM_SUPPORT
+            m_depthPointCloudMsg.reset(new sensor_msgs::PointCloud2());
+            m_depthPointCloudModifier = new sensor_msgs::PointCloud2Modifier(*m_depthPointCloudMsg);
+            m_depthPointCloudModifier->setPointCloud2FieldsByString(2, "xyz", "rgb");
+            m_depthPointCloudModifier->resize(m_width*m_height);
+            if (s_imageTransportInitialized == false){
+                s_imageTransportInitialized = true;
+                int argc = 0;
+                char **argv = 0;
+                ros::init(argc, argv, "ambf_image_transport_node");
+                s_rosNode = new ros::NodeHandle();
+            }
+            m_depthPointCloudPub = s_rosNode->advertise<sensor_msgs::PointCloud2>(m_namespace + m_name + "/DepthData", 1);
+#endif
+
+            }
+        }
     }
 
     return _is_valid;
+}
+
+
+///
+/// \brief afCamera::renderFrameBuffer
+///
+void afCamera::renderFrameBuffer()
+{
+    m_frameBuffer->renderView();
+    m_frameBuffer->copyImageBuffer(m_bufferColorImage);
+    m_frameBuffer->copyDepthBuffer(m_bufferDepthImage);
+}
+
+
+///
+/// \brief afCamera::publishDepthCPUBased
+///
+void afCamera::computeDepthOnCPU()
+{
+    cTransform projMatInv = m_camera->m_projectionMatrix;
+    projMatInv.m_flagTransform = false;
+    projMatInv.invert();
+
+    int width = m_bufferDepthImage->getWidth();
+    int height = m_bufferDepthImage->getHeight();
+    int bbp = m_bufferDepthImage->getBytesPerPixel();
+
+    double varScale = pow(2, sizeof(uint) * 8);
+
+    // Update the dimensions scale information.
+    float n = -m_camera->getNearClippingPlane();
+    float f = -m_camera->getFarClippingPlane();
+    double fva = m_camera->getFieldViewAngleRad();
+    double ar = m_camera->getAspectRatio();
+
+    double delta_x;
+    if (isOrthographic()){
+        delta_x = m_camera->getOrthographicViewWidth();
+    }
+    else{
+        delta_x = 2.0 * cAbs(f) * cTanRad(fva/2.0);
+    }
+    double delta_y = delta_x / ar;
+    double delta_z = f-n;
+
+    cVector3d maxWorldDimensions(delta_x, delta_y, delta_z);
+
+    for (int y_span = 0 ; y_span < height ; y_span++){
+        double yImage = double(y_span) / (height - 1);
+        for (int x_span = 0 ; x_span < width ; x_span++){
+            double xImage = double(x_span) / (width - 1);
+            int idx = y_span * width + x_span;
+            unsigned char b0 = m_bufferDepthImage->getData()[idx * bbp + 0];
+            unsigned char b1 = m_bufferDepthImage->getData()[idx * bbp + 1];
+            unsigned char b2 = m_bufferDepthImage->getData()[idx * bbp + 2];
+            unsigned char b3 = m_bufferDepthImage->getData()[idx * bbp + 3];
+
+            uint depth = uint (b3 << 24 | b2 << 16 | b1 << 8 | b0);
+            double zImage = double (depth) / varScale;
+
+            double xNDC = xImage * 2.0 - 1.0;
+            double yNDC = yImage * 2.0 - 1.0;
+            double zNDC = zImage * 2.0 - 1.0;
+            double wNDC = 1.0;
+            cVector3d pNDC = cVector3d(xNDC, yNDC, zNDC);
+            cVector3d pClip = projMatInv * pNDC;
+            double wClip = projMatInv(3, 0) * xNDC + projMatInv(3, 1) * yNDC + projMatInv(3, 2) * zNDC + projMatInv(3, 3) * wNDC;
+            cVector3d pCam = cDiv(wClip, pClip);
+
+            m_depthPC.m_data[idx * m_depthPC.m_numFields + 0] = pCam.x();
+            m_depthPC.m_data[idx * m_depthPC.m_numFields + 1] = pCam.y();
+            m_depthPC.m_data[idx * m_depthPC.m_numFields + 2] = pCam.z();
+
+        }
+    }
+
+}
+
+
+///
+/// \brief afCamera::renderDepthBuffer
+///
+void afCamera::computeDepthOnGPU()
+{
+
+    m_bufferDepthImage->copyTo(m_depthMesh->m_texture->m_image);
+    m_depthMesh->m_texture->markForUpdate();
+
+    // Change the parent world for the camera so it only render's the depht quad (Mesh)
+    m_camera->setParentWorld(m_dephtWorld);
+
+    // Update the dimensions scale information.
+    float n = -m_camera->getNearClippingPlane();
+    float f = -m_camera->getFarClippingPlane();
+    double fva = m_camera->getFieldViewAngleRad();
+    double ar = m_camera->getAspectRatio();
+
+    double maxX;
+    if (isOrthographic()){
+        maxX = m_camera->getOrthographicViewWidth();
+    }
+    else{
+        maxX = 2.0 * cAbs(f) * cTanRad(fva/2.0);
+    }
+    double maxY = maxX / ar;
+    double maxZ = f-n;
+
+    cVector3d maxWorldDimensions(maxX, maxY, maxZ);
+
+    m_depthMesh->getShaderProgram()->setUniform("maxWorldDimensions", maxWorldDimensions);
+    m_depthMesh->getShaderProgram()->setUniformf("nearPlane", n);
+    m_depthMesh->getShaderProgram()->setUniformf("farPlane", f);
+
+    cTransform invProj = m_camera->m_projectionMatrix;
+    invProj.m_flagTransform = false;
+    invProj.invert();
+
+    m_depthMesh->getShaderProgram()->setUniform("invProjection", invProj, false);
+
+    m_depthBuffer->renderView();
+
+    m_camera->setParentWorld(m_afWorld);
+
+    m_depthBuffer->copyImageBuffer(m_depthBufferColorImage, GL_UNSIGNED_INT);
+
+//    // bind texture
+//    glBindTexture(GL_TEXTURE_2D, m_depthBuffer->m_imageBuffer->getTextureId());
+
+//    // settings
+//    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+//    // copy pixel data if required
+//    glGetTexImage(GL_TEXTURE_2D,
+//                  0,
+//                  GL_RGBA,
+//                  GL_FLOAT,
+//                  (GLvoid*)(m_depthBufferColorImage2)
+//                  );
+
+    int width = m_depthBufferColorImage->getWidth();
+    int height = m_depthBufferColorImage->getHeight();
+    int bbp = m_depthBufferColorImage->getBytesPerPixel();
+
+    double varScale = pow(2, sizeof(uint) * 8);
+
+    for (int y_span = 0 ; y_span < height ; y_span++){
+        for (int x_span = 0 ; x_span < width ; x_span++){
+
+            int idx = (y_span * width + x_span);
+            unsigned char xByte0 = m_depthBufferColorImage->getData()[idx * bbp + 0];
+            unsigned char xByte1 = m_depthBufferColorImage->getData()[idx * bbp + 1];
+            unsigned char xByte2 = m_depthBufferColorImage->getData()[idx * bbp + 2];
+            unsigned char xByte3 = m_depthBufferColorImage->getData()[idx * bbp + 3];
+
+            unsigned char yByte0 = m_depthBufferColorImage->getData()[idx * bbp + 4];
+            unsigned char yByte1 = m_depthBufferColorImage->getData()[idx * bbp + 5];
+            unsigned char yByte2 = m_depthBufferColorImage->getData()[idx * bbp + 6];
+            unsigned char yByte3 = m_depthBufferColorImage->getData()[idx * bbp + 7];
+
+            unsigned char zByte0 = m_depthBufferColorImage->getData()[idx * bbp + 8];
+            unsigned char zByte1 = m_depthBufferColorImage->getData()[idx * bbp + 9];
+            unsigned char zByte2 = m_depthBufferColorImage->getData()[idx * bbp + 10];
+            unsigned char zByte3 = m_depthBufferColorImage->getData()[idx * bbp + 11];
+
+            uint ix = uint(xByte3 << 24 | xByte2 << 16 | xByte1 << 8 | xByte0);
+            uint iy = uint(yByte3 << 24 | yByte2 << 16 | yByte1 << 8 | yByte0);
+            uint iz = uint(zByte3 << 24 | zByte2 << 16 | zByte1 << 8 | zByte0);
+
+            double px = double(ix) / varScale;
+            double py = double(iy) / varScale;
+            double pz = double(iz) / varScale;
+            // Reconstruct from scales applied in the Frag Shader
+            px = (px * maxX - (maxX / 2.0));
+            py = (py  * maxY - (maxY / 2.0));
+            pz = (pz * maxZ  + n);
+
+            m_depthPC.m_data[idx * m_depthPC.m_numFields + 0] = px;
+            m_depthPC.m_data[idx * m_depthPC.m_numFields + 1] = py;
+            m_depthPC.m_data[idx * m_depthPC.m_numFields + 2] = pz;
+        }
+    }
 }
 
 
@@ -6562,15 +7179,47 @@ bool afCamera::loadCamera(YAML::Node* a_camera_node, std::string a_camera_name, 
 ///
 void afCamera::publishImage(){
 #ifdef AF_ENABLE_OPEN_CV_SUPPORT
-    if (m_publishImage){
-        m_frameBuffer->renderView();
-        m_frameBuffer->copyImageBuffer(m_imageFromBuffer);
-        m_imageFromBuffer->flipHorizontal();
-        m_imageMatrix = cv::Mat(m_imageFromBuffer->getHeight(), m_imageFromBuffer->getWidth(), CV_8UC4, m_imageFromBuffer->getData());
-        cv::cvtColor(m_imageMatrix, m_imageMatrix, cv::COLOR_BGRA2RGB);
-        sensor_msgs::ImagePtr rosMsg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", m_imageMatrix).toImageMsg();
-        m_imagePublisher.publish(rosMsg);
+    // UGLY HACK TO FLIP ONCES BEFORE PUBLISHING AND THEN AGAIN AFTER TO HAVE CORRECT MAPPING
+    // WITH THE COLORED DETPH POINT CLOUD
+    m_bufferColorImage->flipHorizontal();
+    m_imageMatrix = cv::Mat(m_bufferColorImage->getHeight(), m_bufferColorImage->getWidth(), CV_8UC4, m_bufferColorImage->getData());
+    cv::cvtColor(m_imageMatrix, m_imageMatrix, cv::COLOR_RGBA2RGB);
+    sensor_msgs::ImagePtr rosMsg = cv_bridge::CvImage(std_msgs::Header(), "rgb8", m_imageMatrix).toImageMsg();
+    m_imagePublisher.publish(rosMsg);
+    m_bufferColorImage->flipHorizontal();
+#endif
+}
+
+
+///
+/// \brief afCamera::publishDepthPointCloud
+///
+void afCamera::publishDepthPointCloud()
+{
+#ifdef C_ENABLE_AMBF_COMM_SUPPORT
+    sensor_msgs::PointCloud2Iterator<float> pcMsg_x(*m_depthPointCloudMsg, "x");
+    sensor_msgs::PointCloud2Iterator<float> pcMsg_y(*m_depthPointCloudMsg, "y");
+    sensor_msgs::PointCloud2Iterator<float> pcMsg_z(*m_depthPointCloudMsg, "z");
+    sensor_msgs::PointCloud2Iterator<uint8_t> pcMsg_r(*m_depthPointCloudMsg, "r");
+    sensor_msgs::PointCloud2Iterator<uint8_t> pcMsg_g(*m_depthPointCloudMsg, "g");
+    sensor_msgs::PointCloud2Iterator<uint8_t> pcMsg_b(*m_depthPointCloudMsg, "b");
+
+    int width = m_depthBufferColorImage->getWidth();
+    int height = m_depthBufferColorImage->getHeight();
+
+    for (int idx = 0 ; idx < width * height ; idx++, ++pcMsg_x, ++pcMsg_y, ++pcMsg_z, ++pcMsg_r, ++pcMsg_g, ++pcMsg_b){
+        *pcMsg_x = m_depthPC.m_data[idx * m_depthPC.m_numFields + 0];
+        *pcMsg_y = m_depthPC.m_data[idx * m_depthPC.m_numFields + 1];
+        *pcMsg_z = m_depthPC.m_data[idx * m_depthPC.m_numFields + 2];
+
+        *pcMsg_r = m_bufferColorImage->getData()[idx * 4 + 0];
+        *pcMsg_g = m_bufferColorImage->getData()[idx * 4 + 1];
+        *pcMsg_b = m_bufferColorImage->getData()[idx * 4 + 2];
     }
+
+    m_depthPointCloudMsg->header.frame_id = m_name;
+    m_depthPointCloudMsg->header.stamp = ros::Time::now();
+    m_depthPointCloudPub.publish(m_depthPointCloudMsg);
 #endif
 }
 
@@ -6605,23 +7254,6 @@ bool afCamera::resolveParenting(std::string a_parent_name){
         // No parent assigned, so report success as we have nothing to find
         return true;
     }
-}
-
-
-///
-/// \brief afCamera::measuredPos
-/// \return
-///
-cVector3d afCamera::measuredPos(){
-    return getLocalPos();
-}
-
-///
-/// \brief afCamera::measuredRot
-/// \return
-///
-cMatrix3d afCamera::measuredRot(){
-    return getLocalRot();
 }
 
 
@@ -6679,10 +7311,20 @@ void afCamera::afExecuteCommand(double dt){
 
                 switch (m_afCameraCommPtr->get_projection_type()) {
                 case ambf_comm::ProjectionType::PERSPECTIVE:
+                    if (field_view_angle == 0){
+                        field_view_angle = 0.7;
+                        m_paramsSet = false;
+                    }
                     m_camera->setFieldViewAngleRad(field_view_angle);
+                    m_orthographic = false;
                     break;
                 case ambf_comm::ProjectionType::ORTHOGRAPHIC:
+                    if (orthographic_view_width == 0){
+                        orthographic_view_width = 10.0;
+                        m_paramsSet = false;
+                    }
                     m_camera->setOrthographicView(orthographic_view_width);
+                    m_orthographic = true;
                     break;
                 default:
                     break;
@@ -6764,19 +7406,152 @@ void afCamera::updatePositionFromDynamics()
 
 
 ///
+/// \brief afCamera::updateLabels
+/// \param options
+///
+void afCamera::updateLabels(afRenderOptions &options)
+{
+    // Not all labels change at every frame buffer.
+    // We should prioritize the update of freqeunt labels
+
+    // update haptic and graphic rate data
+    std::string wallTimeStr = "Wall Time: " + cStr(m_afWorld->g_wallClock.getCurrentTimeSeconds(), 2) + " s";
+    std::string simTimeStr = "Sim Time: " + cStr(m_afWorld->getSimulationTime(), 2) + " s";
+
+    std::string graphicsFreqStr = "Gfx (" + cStr(m_afWorld->m_freqCounterGraphics.getFrequency(), 0) + " Hz)";
+    std::string hapticFreqStr = "Phx (" + cStr(m_afWorld->m_freqCounterHaptics.getFrequency(), 0) + " Hz)";
+
+    std::string timeLabelStr = wallTimeStr + " / " + simTimeStr;
+    std::string dynHapticFreqLabelStr = graphicsFreqStr + " / " + hapticFreqStr;
+    std::string modeLabelStr = "MODE: " + options.m_IIDModeStr;
+    std::string btnLabelStr = " : " + options.m_IIDBtnActionStr;
+
+    m_wallSimTimeLabel->setText(timeLabelStr);
+    m_graphicsDynamicsFreqLabel->setText(dynHapticFreqLabelStr);
+    m_devicesModesLabel->setText(modeLabelStr);
+    m_deviceButtonLabel->setText(btnLabelStr);
+
+    std::string controlling_dev_names;
+    for (int devIdx = 0 ; devIdx < m_devHapticFreqLabels.size() ; devIdx++){
+        m_devHapticFreqLabels[devIdx]->setLocalPos(10, (int)( m_height - ( devIdx + 1 ) * 20 ) );
+        controlling_dev_names += m_controllingDevNames[devIdx] + " <> ";
+    }
+
+    m_controllingDeviceLabel->setText("Controlling Devices: [ " + controlling_dev_names + " ]");
+
+    // update position of label
+    m_wallSimTimeLabel->setLocalPos((int)(0.5 * (m_width - m_wallSimTimeLabel->getWidth() ) ), 30);
+    m_graphicsDynamicsFreqLabel->setLocalPos((int)(0.5 * (m_width - m_graphicsDynamicsFreqLabel->getWidth() ) ), 10);
+    m_devicesModesLabel->setLocalPos((int)(0.5 * (m_width - m_devicesModesLabel->getWidth())), 50);
+    m_deviceButtonLabel->setLocalPos((int)(0.5 * (m_width - m_devicesModesLabel->getWidth()) + m_devicesModesLabel->getWidth()), 50);
+    m_controllingDeviceLabel->setLocalPos((int)(0.5 * (m_width - m_controllingDeviceLabel->getWidth())), (int)(m_height - 20));
+
+}
+
+
+///
 /// \brief afCamera::~afCamera
 ///
 afCamera::~afCamera(){
+    if (m_frameBuffer != nullptr){
+        delete m_frameBuffer;
+    }
+
+    if (m_depthBuffer != nullptr){
+        delete m_depthBuffer;
+    }
+
+    if (m_dephtWorld != nullptr){
+        delete m_dephtWorld;
+    }
 #ifdef AF_ENABLE_OPEN_CV_SUPPORT
-    if (m_publishImage){
-        delete m_frameBuffer;;
-        if (s_imageTransportInitialized == true){
-            s_imageTransportInitialized = false;
-            delete s_imageTransport;
-            delete s_imageTransportNode;
-        }
+    if (s_imageTransport != nullptr){
+        delete s_imageTransport;
+    }
+
+    s_imageTransportInitialized = false;
+#endif
+
+#ifdef C_ENABLE_AMBF_COMM_SUPPORT
+    if (s_rosNode != nullptr){
+        delete s_rosNode;
+    }
+
+    if (m_depthPointCloudModifier != nullptr){
+        delete m_depthPointCloudModifier;
     }
 #endif
+
+}
+
+int dcntr = 0;
+///
+/// \brief afCamera::render
+/// \param options
+///
+void afCamera::render(afRenderOptions &options)
+{
+    // set current display context
+    glfwMakeContextCurrent(m_window);
+
+    // get width and height of window
+    glfwGetFramebufferSize(m_window, &m_width, &m_height);
+
+    // Update the Labels in a separate sub-routine
+    if (options.m_updateLabels && !m_publishDepth){
+        updateLabels(options);
+    }
+
+    if (m_afWorld->m_skyBox_shaderProgramDefined && m_afWorld->m_skyBoxMesh->getShaderProgram() != nullptr){
+        cGenericObject* go;
+        cRenderOptions ro;
+        m_afWorld->m_skyBoxMesh->getShaderProgram()->use(go, ro);
+
+        cMatrix3d rotOffsetPre(0, 0, 90, C_EULER_ORDER_ZYX, false, true);
+        cMatrix3d rotOffsetPost(90, 90, 0, C_EULER_ORDER_ZYX, false, true);
+        cTransform viewMat = rotOffsetPre * getLocalTransform() * rotOffsetPost;
+
+        m_afWorld->m_skyBoxMesh->getShaderProgram()->setUniform("viewMat", viewMat, 1);
+
+        m_afWorld->m_skyBoxMesh->getShaderProgram()->disable();
+    }
+
+    // render world
+   renderView(m_width,m_height);
+
+    // swap buffers
+    glfwSwapBuffers(m_window);
+
+    // Only set the _window_closed if the condition is met
+    // otherwise a non-closed window will set the variable back
+    // to false
+    if (glfwWindowShouldClose(m_window)){
+        options.m_windowClosed = true;
+    }
+
+    m_sceneUpdateCounter++;
+
+    if (m_publishImage || m_publishDepth){
+        renderFrameBuffer();
+    }
+
+    if (m_publishImage){
+        if (m_sceneUpdateCounter % m_imagePublishInterval == 0){
+            publishImage();
+        }
+    }
+
+    if (m_publishDepth){
+        if (m_sceneUpdateCounter % m_depthPublishInterval == 0){
+            if (m_useGPUForDepthComputation){
+                computeDepthOnGPU();
+            }
+            else{
+                computeDepthOnCPU();
+            }
+            publishDepthPointCloud();
+        }
+    }
 }
 
 
@@ -7286,7 +8061,9 @@ bool afMultiBody::loadMultiBody(std::string a_adf_filepath, bool enable_comm){
                                                         m_afWorld->resolveGlobalNamespace(sensorPtr->getNamespace()),
                                                         sensorPtr->getMinPublishFrequency(),
                                                         sensorPtr->getMaxPublishFrequency());
+#ifdef C_ENABLE_AMBF_COMM_SUPPORT
                         sensorPtr->m_afSensorCommPtr->set_type(sensor_type);
+#endif
 //                    }
                 }
             }
@@ -7324,7 +8101,9 @@ bool afMultiBody::loadMultiBody(std::string a_adf_filepath, bool enable_comm){
                                                         m_afWorld->resolveGlobalNamespace(actuatorPtr->getNamespace()),
                                                         actuatorPtr->getMinPublishFrequency(),
                                                         actuatorPtr->getMaxPublishFrequency());
+#ifdef C_ENABLE_AMBF_COMM_SUPPORT
                         actuatorPtr->m_afActuatorCommPtr->set_type(actuator_type);
+#endif
 //                    }
                 }
             }
@@ -7404,7 +8183,7 @@ afRigidBodyPtr afMultiBody::getAFRigidBodyLocal(std::string a_name, bool suppres
     }
     else{
         if (!suppress_warning){
-            std::cerr << "WARNING: CAN'T FIND ANY BODY NAMED: " << a_name << std::endl;
+            std::cerr << "WARNING: CAN'T FIND ANY BODY NAMED: " << a_name << " IN LOCAL MAP" << std::endl;
 
             std::cerr <<"Existing Bodies in Map: " << m_afRigidBodyMapLocal.size() << std::endl;
             afRigidBodyMap::iterator rbIt = m_afRigidBodyMapLocal.begin();
@@ -7558,7 +8337,7 @@ T afWorld::getObject(std::string a_name, TMap* a_map, bool suppress_warning){
     }
     else{
         if (!suppress_warning){
-            std::cerr << "WARNING: CAN'T FIND ANY OBJECTS NAMED: \"" << a_name << "\"\n";
+            std::cerr << "WARNING: CAN'T FIND ANY OBJECTS NAMED: \"" << a_name << "\" IN GLOBAL MAP \n";
 
             std::cerr <<"Existing OBJECTS in Map: " << a_map->size() << std::endl;
             typename TMap::iterator oIt = a_map->begin();
@@ -7824,6 +8603,18 @@ afMultiBody::~afMultiBody(){
 }
 
 afVehicle::afVehicle(afWorldPtr a_afWorld): afBaseObject(a_afWorld){
+
+}
+
+afVehicle::~afVehicle()
+{
+    if (m_vehicleRayCaster != nullptr){
+        delete m_vehicleRayCaster;
+    }
+
+    if (m_vehicle != nullptr){
+        delete m_vehicle;
+    }
 
 }
 
@@ -8154,6 +8945,40 @@ void afVehicle::updatePositionFromDynamics(){
         }
     }
 #endif
+}
+
+
+///
+/// \brief afDepthPointCloud::setup
+/// \param a_width
+/// \param a_height
+/// \param a_numFields
+/// \return
+///
+int afDepthPointCloud::setup(int a_width, int a_height, int a_numFields)
+{
+    if ( (a_width <= 0) || (a_height <= 0) || (a_numFields <= 0) ){
+        // PRINT SOME ERROR MESSAGE
+        return -1;
+    }
+
+    m_width = a_width;
+    m_height = a_height;
+    m_numFields = a_numFields;
+    m_data = (float*) malloc(m_width * m_height * m_numFields * sizeof(float));
+
+    return 1;
+}
+
+
+///
+/// \brief afDepthPointCloud::~afDepthPointCloud
+///
+afDepthPointCloud::~afDepthPointCloud()
+{
+    if (m_data != nullptr){
+        free(m_data);
+    }
 }
 
 

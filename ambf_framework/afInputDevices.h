@@ -1,8 +1,8 @@
 //==============================================================================
 /*
     Software License Agreement (BSD License)
-    Copyright (c) 2019, AMBF
-    (www.aimlab.wpi.edu)
+    Copyright (c) 2020, AMBF
+    (https://github.com/WPI-AIM/ambf)
 
     All rights reserved.
 
@@ -35,10 +35,9 @@
     ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
 
-    \author:    <http://www.aimlab.wpi.edu>
-    \author:    <amunawar@wpi.edu>
-    \author:    Adnan Munawar
-    \version:   $
+    \author    <amunawar@wpi.edu>
+    \author    Adnan Munawar
+    \version   1.0$
 */
 //==============================================================================
 
@@ -85,20 +84,24 @@ struct afSharedDataStructure{
 public:
     afSharedDataStructure();
 
-public:
-    cVector3d m_posRefOrigin;
-    cMatrix3d m_rotRefOrigin;
 
 public:
     void setPosRef(cVector3d a_pos);
     void setRotRef(cMatrix3d a_rot);
+    void setPosRefOrigin(cVector3d a_pos);
+    void setRotRefOrigin(cMatrix3d a_rot);
 
     cVector3d getPosRef();
     cMatrix3d getRotRef();
+    cVector3d getPosRefOrigin();
+    cMatrix3d getRotRefOrigin();
 
 private:
     cVector3d m_posRef;
     cMatrix3d m_rotRef;
+
+    cVector3d m_posRefOrigin;
+    cMatrix3d m_rotRefOrigin;
 
 protected:
     std::mutex m_mutex;
@@ -113,15 +116,23 @@ public:
 
     ~afSimulatedDevice(){}
 
-    cVector3d measuredPos();
+    cVector3d getPos();
 
-    cMatrix3d measuredRot();
+    cMatrix3d getRot();
 
-    void updateMeasuredPose();
+    void updatePose();
 
-    inline void applyForce(cVector3d force){if (!m_rootLink->m_af_enable_position_controller) m_rootLink->addExternalForce(force);}
+    inline void applyForce(cVector3d force){
+        if (m_rootLink->m_activeControllerType == afControlType::force){
+            m_rootLink->addExternalForce(force);
+        }
+    }
 
-    inline void applyTorque(cVector3d torque){if (!m_rootLink->m_af_enable_position_controller) m_rootLink->addExternalTorque(torque);}
+    inline void applyTorque(cVector3d torque){
+        if (m_rootLink->m_activeControllerType == afControlType::force){
+            m_rootLink->addExternalTorque(torque);
+        }
+    }
 
     bool isWrenchSet();
 
@@ -129,7 +140,7 @@ public:
 
     void offsetGripperAngle(double offset);
 
-    void setGripperAngle(double angle, double dt=0.001);
+    void setGripperAngle(double angle);
 
 public:
     cVector3d m_pos;
@@ -148,7 +159,7 @@ public:
     std::vector<SoftBodyGrippingConstraint*> m_softGrippingConstraints;
 
     // Root link for this simulated device hhhhhhh
-    afRigidBodyPtr m_rootLink;
+    afRigidBodyPtr m_rootLink = nullptr;
 
     //private:
     //    std::mutex m_mutex;
@@ -184,31 +195,45 @@ public:
 
     inline bool isJointControlEnabled(){return m_jointControlEnable;}
 
-    cVector3d measuredPos();
+    cVector3d getPos();
 
-    cMatrix3d measuredRot();
+    cMatrix3d getRot();
 
-    cVector3d measuredPosPreclutch();
+    cVector3d getPosClutched();
 
-    cMatrix3d measuredRotPreclutch();
+    cMatrix3d getRotClutched();
 
-    void setPosPreclutch(cVector3d a_pos);
+    void setPosClutched(cVector3d a_pos);
 
-    void setRotPreclutch(cMatrix3d a_rot);
+    void setRotClutched(cMatrix3d a_rot);
 
-    cVector3d measuredPosCamPreclutch();
+    cVector3d getPosPreClutch();
 
-    cMatrix3d measuredRotCamPreclutch();
+    cMatrix3d getRotPreClutch();
 
-    void setPosCamPreclutch(cVector3d a_pos);
+    void setPosPreClutch(cVector3d a_pos);
 
-    void setRotCamPreclutch(cMatrix3d a_rot);
+    void setRotPreClutch(cMatrix3d a_rot);
 
-    cVector3d measuredVelLin();
+    cVector3d getPosCamPreClutch();
 
-    cVector3d mearuredVelAng();
+    cMatrix3d getRotCamPreClutch();
 
-    double measuredGripperAngle();
+    void setPosCamPreClutch(cVector3d a_pos);
+
+    void setRotCamPreClutch(cMatrix3d a_rot);
+
+    cMatrix3d getSimRotInitial();
+
+    cMatrix3d getSimRotOffset();
+
+    cMatrix3d getSimRotOffsetInverse();
+
+    cVector3d getLinVel();
+
+    cVector3d getAngVel();
+
+    double getGripperAngle();
 
     void applyWrench(cVector3d a_force, cVector3d a_torque);
 
@@ -262,6 +287,9 @@ public:
     // to store any intended offset
     cMatrix3d m_simRotOffset;
 
+    // Inverse of the simRotOffset
+    cMatrix3d m_simRotOffsetInverse;
+
     // Flag to enable disable showing of reference marker
     bool m_showMarker;
 
@@ -283,8 +311,7 @@ public:
     std::vector<std::string> m_pairedCameraNames;
 
 private:
-    afCollateralControlManager* m_iDPtr; // Ptr to the Device Handler class
-    afWorldPtr m_afWorld; // Ref to world ptr
+    afWorldPtr m_afWorld = nullptr; // Ref to world ptr
 };
 
 ///
@@ -306,8 +333,8 @@ enum MODES{ CAM_CLUTCH_CONTROL,
 /// controllable cameras by that SDE-IID
 ///
 struct afCollateralControlUnit{
-    afPhysicalDevice* m_physicalDevicePtr = NULL;
-    afSimulatedDevice* m_simulatedDevicePtr = NULL;
+    afPhysicalDevice* m_physicalDevicePtr = nullptr;
+    afSimulatedDevice* m_simulatedDevicePtr = nullptr;
     // The cameras that this particular device Gripper Pair control
     std::vector<afCameraPtr> m_cameras;
 
@@ -369,7 +396,7 @@ public:
     std::shared_ptr<cHapticDeviceHandler> m_deviceHandler;
     std::vector<afCollateralControlUnit> m_collateralControlUnits;
 
-    uint m_numDevices;
+    uint m_numDevices = 0;
 
     // bool to enable the rotation of simulated gripper be in camera frame. i.e. Orienting the camera
     // re-orients the simulate gripper.
@@ -396,9 +423,9 @@ public:
     int m_mode_idx;
 
 
-    std::string g_btn_action_str = "";
-    bool g_cam_btn_pressed = false;
-    bool g_clutch_btn_pressed = false;
+    std::string m_btn_action_str = "";
+    bool m_cam_btn_pressed = false;
+    bool m_clutch_btn_pressed = false;
 
     // Number of input devices loaded. To be used by the devices while launching
     // thier afCommunication
@@ -407,7 +434,7 @@ public:
 private:
     // Base of the config file location of this Input Device Handler
     boost::filesystem::path m_basePath;
-    afWorldPtr m_afWorld;
+    afWorldPtr m_afWorld = nullptr;
     // Integer index to keep track of device indexes that have already been
     // claimed so that we dont mistakenly claim and already claimed device
     std::vector<int> m_devicesClaimed;

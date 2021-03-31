@@ -1,6 +1,6 @@
 import numpy as np
 from utilities import *
-
+from kinematics import *
 
 # THIS IS THE FK FOR THE PSM MOUNTED WITH THE LARGE NEEDLE DRIVER TOOL. THIS IS THE
 # SAME KINEMATIC CONFIGURATION FOUND IN THE DVRK MANUAL. NOTE, JUST LIKE A FAULT IN THE
@@ -23,14 +23,19 @@ def compute_FK(joint_pos):
 
     # The last frame is fixed
 
+    L_rcc = 0.4389
+    L_tool = 0.416
+    L_pitch2yaw = 0.009
+    L_yaw2ctrlpnt = 0.0106
+
     # PSM DH Params
-    link1 = DH(alpha=PI_2, a=0, theta=j[0], d=0, offset=PI_2, joint_type='R')
-    link2 = DH(alpha=-PI_2, a=0, theta=j[1], d=0, offset=-PI_2, joint_type='R')
-    link3 = DH(alpha=PI_2, a=0, theta=0, d=j[2], offset=-.4318, joint_type='P')
-    link4 = DH(alpha=0, a=0, theta=j[3], d=0.4162, offset=0, joint_type='R')
-    link5 = DH(alpha=-PI_2, a=0, theta=j[4], d=0, offset=-PI_2, joint_type='R')
-    link6 = DH(alpha=-PI_2, a=0.0091, theta=j[5], d=0, offset=-PI_2, joint_type='R')
-    link7 = DH(alpha=-PI_2, a=0, theta=0, d=0.0102, offset=PI_2, joint_type='R')
+    link1 = DH(alpha=PI_2, a=0, theta=j[0], d=0, offset=PI_2, joint_type='R', convention='MODIFIED')
+    link2 = DH(alpha=-PI_2, a=0, theta=j[1], d=0, offset=-PI_2, joint_type='R', convention='MODIFIED')
+    link3 = DH(alpha=PI_2, a=0, theta=0, d=j[2], offset=-L_rcc, joint_type='P', convention='MODIFIED')
+    link4 = DH(alpha=0, a=0, theta=j[3], d=L_tool, offset=0, joint_type='R', convention='MODIFIED')
+    link5 = DH(alpha=-PI_2, a=0, theta=j[4], d=0, offset=-PI_2, joint_type='R', convention='MODIFIED')
+    link6 = DH(alpha=-PI_2, a=L_pitch2yaw, theta=j[5], d=0, offset=-PI_2, joint_type='R', convention='MODIFIED')
+    link7 = DH(alpha=-PI_2, a=0, theta=0, d=L_yaw2ctrlpnt, offset=PI_2, joint_type='R', convention='MODIFIED')
 
     T_1_0 = link1.get_trans()
     T_2_1 = link2.get_trans()
@@ -39,9 +44,6 @@ def compute_FK(joint_pos):
     T_5_4 = link5.get_trans()
     T_6_5 = link6.get_trans()
     T_7_6 = link7.get_trans()
-
-    # print("\nT_4_3: ")
-    # print(T_4_3)
 
     T_2_0 = np.matmul(T_1_0, T_2_1)
     T_3_0 = np.matmul(T_2_0, T_3_2)
@@ -72,41 +74,6 @@ def compute_FK(joint_pos):
 
     elif len(joint_pos) == 7:
         return T_7_0
-
-
-class DH:
-    def __init__(self, alpha, a, theta, d, offset, joint_type):
-        self.alpha = alpha
-        self.a = a
-        self.theta = theta
-        self.d = d
-        self.offset = offset
-        self.joint_type = joint_type
-
-    def mat_from_dh(self, alpha, a, theta, d, offset):
-
-        ca = np.cos(alpha)
-        sa = np.sin(alpha)
-        if self.joint_type == 'R':
-            theta = theta + offset
-        elif self.joint_type == 'P':
-            d = d + offset
-        else:
-            assert type == 'P' and type == 'R'
-
-        ct = np.cos(theta)
-        st = np.sin(theta)
-
-        mat = np.mat([
-            [ct     , -st     ,  0 ,  a],
-            [st * ca,  ct * ca, -sa, -d * sa],
-            [st * sa,  ct * sa,  ca,  d * ca],
-            [0      ,  0      ,  0 ,  1]
-        ])
-        return mat
-
-    def get_trans(self):
-        return self.mat_from_dh(self.alpha, self.a, self.theta, self.d, self.offset)
 
 
 # T_7_0 = compute_FK([-0.5, 0, 0.2, 0, 0, 0])
